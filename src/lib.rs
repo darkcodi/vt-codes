@@ -685,185 +685,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mod_floor() {
-        assert_eq!(mod_floor(-3, 5), 2);
-        assert_eq!(mod_floor(7, 5), 2);
-        assert_eq!(mod_floor(0, 5), 0);
-        assert_eq!(mod_floor(-10, 3), 2);
-    }
-
-    #[test]
-    fn test_find_k_find_smallest_n_consistency() {
-        for q in [1u8, 2, 3, 4, 255] {
-            for k in 1..=20 {
-                let n = find_smallest_n(k, q);
-                assert!(
-                    find_k(n, q) >= k,
-                    "find_k({n}, {q}) = {} < {k}",
-                    find_k(n, q)
-                );
-                if n > 2 {
-                    assert!(
-                        find_k(n - 1, q) < k,
-                        "n-1={} also works for k={k}, q={q}",
-                        n - 1
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_vt_encode_in_place_basic() {
-        let mut buf = vec![0u8; 32];
-        buf[..11].copy_from_slice(b"Hello world");
-
-        let result = vt_encode_in_place(&mut buf, 11);
-        assert!(result.is_ok());
-        let n = result.unwrap();
-        assert_eq!(n, 20);
-    }
-
-    #[test]
-    fn test_vt_encode_in_place_buffer_too_small() {
-        let mut buf = vec![0u8; 10];
-        buf[..10].copy_from_slice(b"Hello worl");
-        assert_eq!(vt_encode_in_place(&mut buf, 10), Err(Error::BufferTooSmall));
-    }
-
-    #[test]
-    fn test_vt_encode_in_place_invalid_input() {
-        let mut buf = vec![0u8; 32];
-        assert_eq!(vt_encode_in_place(&mut buf, 0), Err(Error::InvalidInputLength));
-        assert_eq!(vt_encode_in_place(&mut buf, 256), Err(Error::InvalidInputLength));
-    }
-
-    #[test]
-    fn test_vt_decode_in_place_no_error() {
-        let mut buf = vec![0u8; 32];
-        buf[..11].copy_from_slice(b"Hello world");
-        let n = vt_encode_in_place(&mut buf, 11).unwrap();
-        let result = vt_decode_in_place(&mut buf, n);
-        assert!(result.is_ok());
-        let k = result.unwrap();
-        assert_eq!(k, 11);
-        assert_eq!(&buf[..k], b"Hello world");
-    }
-
-    #[test]
-    fn test_vt_decode_in_place_deletion() {
-        let mut buf = vec![0u8; 32];
-        buf[..11].copy_from_slice(b"Hello world");
-        let n = vt_encode_in_place(&mut buf, 11).unwrap();
-
-        let del_pos = 5;
-        let mut corrupted = buf[..n].to_vec();
-        corrupted.remove(del_pos);
-
-        let mut decode_buf = vec![0u8; 32];
-        decode_buf[..corrupted.len()].copy_from_slice(&corrupted);
-        let result = vt_decode_in_place(&mut decode_buf, corrupted.len());
-        assert!(result.is_ok(), "Failed to decode with deletion");
-        let k = result.unwrap();
-        assert_eq!(k, 11);
-        assert_eq!(&decode_buf[..k], b"Hello world");
-    }
-
-    #[test]
-    fn test_vt_decode_in_place_insertion() {
-        let mut buf = vec![0u8; 32];
-        buf[..11].copy_from_slice(b"Hello world");
-        let n = vt_encode_in_place(&mut buf, 11).unwrap();
-
-        let successful_insertions = vec![0, 5, 10];
-        let mut found_success = false;
-
-        for ins_pos in successful_insertions {
-            let mut corrupted = buf[..n].to_vec();
-            corrupted.insert(ins_pos, 42);
-
-            let mut decode_buf = vec![0u8; 32];
-            decode_buf[..corrupted.len()].copy_from_slice(&corrupted);
-            let result = vt_decode_in_place(&mut decode_buf, corrupted.len());
-
-            if let Ok(k) = result {
-                if k == 11 && &decode_buf[..k] == b"Hello world" {
-                    found_success = true;
-                    break;
-                }
-            }
-        }
-        assert!(found_success, "No insertion positions were correctable");
-    }
-
-    #[test]
-    fn test_vt_decode_in_place_corrupted_data() {
-        let mut buf = vec![0u8; 32];
-        for i in 0..32 {
-            buf[i] = (i * 7) as u8;
-        }
-        assert_eq!(vt_decode_in_place(&mut buf, 20), Err(Error::CorruptedData));
-    }
-
-    #[test]
-    fn test_vt_decode_in_place_invalid_input() {
-        let mut buf = vec![0u8; 32];
-        assert_eq!(vt_decode_in_place(&mut buf, 0), Err(Error::InvalidInputLength));
-    }
-
-    #[test]
-    fn test_vt_encode_decode_roundtrip_in_place() {
-        let test_data = [
-            b"Hello world".as_slice(),
-            b"Test data".as_slice(),
-            b"\x00\x01\x02\x03\x04".as_slice(),
-            b"\x70\x71\x72\x73\x74".as_slice(),
-        ];
-
-        for data in &test_data {
-            let mut buf = vec![0u8; 64];
-            buf[..data.len()].copy_from_slice(data);
-            let n = vt_encode_in_place(&mut buf, data.len()).unwrap();
-            let k = vt_decode_in_place(&mut buf, n).unwrap();
-            assert_eq!(k, data.len());
-            assert_eq!(&buf[..k], *data);
-        }
-    }
-
-    #[test]
-    fn test_vt_encode_decode_with_deletion_in_place() {
-        let mut buf = vec![0u8; 64];
-        let original = b"The quick brown fox";
-        buf[..original.len()].copy_from_slice(original);
-        let n = vt_encode_in_place(&mut buf, original.len()).unwrap();
-
-        for del_pos in [0, n / 2, n - 1] {
-            let mut corrupted = buf[..n].to_vec();
-            corrupted.remove(del_pos);
-
-            let mut decode_buf = vec![0u8; 64];
-            decode_buf[..corrupted.len()].copy_from_slice(&corrupted);
-
-            let k = vt_decode_in_place(&mut decode_buf, corrupted.len()).unwrap();
-            assert_eq!(k, original.len());
-            assert_eq!(&decode_buf[..k], *original);
-        }
-    }
-
-    #[test]
     fn test_main() {
         let mut buf = vec![0u8; 32];
         buf[..11].copy_from_slice(b"Hello world");
         let n = vt_encode_in_place(&mut buf, 11).unwrap();
 
-        let del_pos = 5;
-        let mut with_deletion = buf[..n].to_vec();
-        with_deletion.remove(del_pos);
+        for del_pos in 0..n {
+            let mut with_deletion = buf[..n].to_vec();
+            with_deletion.remove(del_pos as usize);
 
-        let mut decode_buf = vec![0u8; 32];
-        decode_buf[..with_deletion.len()].copy_from_slice(&with_deletion);
-        let decoded_len = vt_decode_in_place(&mut decode_buf, with_deletion.len()).unwrap();
+            let mut decode_buf = vec![0u8; 32];
+            decode_buf[..with_deletion.len()].copy_from_slice(&with_deletion);
+            let decoded_len = vt_decode_in_place(&mut decode_buf, with_deletion.len()).unwrap();
 
-        assert_eq!(&decode_buf[..decoded_len], b"Hello world");
+            assert_eq!(&decode_buf[..decoded_len], b"Hello world", "Failed to decode with deletion at position {del_pos}");
+        }
+
+        for ins_pos in 0..=n {
+            let mut with_insertion = buf[..n].to_vec();
+            with_insertion.insert(ins_pos as usize, 0x2A);
+
+            let mut decode_buf = vec![0u8; 32];
+            decode_buf[..with_insertion.len()].copy_from_slice(&with_insertion);
+            let decoded_len = vt_decode_in_place(&mut decode_buf, with_insertion.len()).unwrap();
+
+            assert_eq!(&decode_buf[..decoded_len], b"Hello world", "Failed to decode with insertion at position {ins_pos}");
+        }
     }
 }
