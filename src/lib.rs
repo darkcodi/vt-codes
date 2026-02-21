@@ -355,7 +355,7 @@ pub struct VTCode {
 }
 
 impl VTCode {
-    pub fn new(n: u8, q: u8, a: u8, b: u8) -> Self {
+    pub fn new(n: u8, q: u8) -> Self {
         assert!(q >= 1);
         assert!(n >= 2);
         let k = find_k(n, q);
@@ -366,8 +366,8 @@ impl VTCode {
             q,
             k,
             m: 0,
-            a,
-            b,
+            a: 0,
+            b: 0,
             systematic_positions: Vec::new(),
             parity_positions: Vec::new(),
             t: 0,
@@ -381,13 +381,13 @@ impl VTCode {
 
         if q == 1 {
             code.m = n + 1;
-            assert!(a < code.m);
+            assert!(code.a < code.m);
             code.generate_systematic_positions_binary();
         } else {
             code.m = n;
             code.t = ceil_log2(n);
-            assert!(a < code.m);
-            assert!(b <= q);
+            assert!(code.a < code.m);
+            assert!(code.b <= q);
             code.generate_tables();
         }
         code
@@ -813,7 +813,7 @@ mod tests {
         // For each byte, create a VT code (8 bits per byte)
         // n=12 gives k=8 binary bits (exactly one byte)
         let n: u8 = 12;
-        let code = VTCode::new(n, 1, 0, 0);
+        let code = VTCode::new(n, 1);
         println!("VT code per byte: n={}, k={}", code.n, code.k);
 
         // Encode each byte
@@ -952,7 +952,7 @@ mod tests {
     #[test]
     fn test_binary_encode_decode_roundtrip() {
         for n in [7u8, 10, 15, 20, 31] {
-            let code = VTCode::new(n, 1, 0, 0);
+            let code = VTCode::new(n, 1);
             // all zeros
             let x = vec![0u8; code.k as usize];
             let y = code.encode(&x);
@@ -976,7 +976,7 @@ mod tests {
     #[test]
     fn test_binary_deletion_correction() {
         for n in [7u8, 10, 15, 20] {
-            let code = VTCode::new(n, 1, 0, 0);
+            let code = VTCode::new(n, 1);
             let x: Vec<u8> = (0..code.k).map(|i| ((i + 1) % 2) as u8).collect();
             let y = code.encode(&x);
 
@@ -998,7 +998,7 @@ mod tests {
     #[test]
     fn test_binary_insertion_correction() {
         for n in [7u8, 10, 15, 20] {
-            let code = VTCode::new(n, 1, 0, 0);
+            let code = VTCode::new(n, 1);
             let x: Vec<u8> = (0..code.k).map(|i| (i % 2) as u8).collect();
             let y = code.encode(&x);
 
@@ -1028,7 +1028,7 @@ mod tests {
         for q in [2u8, 3, 4] {
             let min_n = if q == 2 { 9 } else { 10 };
             for n in [min_n, min_n + 5, min_n + 10] {
-                let code = VTCode::new(n, q, 0, 0);
+                let code = VTCode::new(n, q);
                 // all zeros
                 let x = vec![0u8; code.k as usize];
                 let y = code.encode(&x);
@@ -1054,7 +1054,7 @@ mod tests {
     fn test_q_ary_deletion_correction() {
         for q in [2u8, 3, 4] {
             let n = if q == 2 { 9 } else { 10 };
-            let code = VTCode::new(n, q, 0, 0);
+            let code = VTCode::new(n, q);
             let x: Vec<u8> = (0..code.k).map(|i| (i % 2) as u8).collect();
             let y = code.encode(&x);
 
@@ -1075,7 +1075,7 @@ mod tests {
     fn test_q_ary_insertion_correction() {
         for q in [2u8, 3] {
             let n = if q == 2 { 9 } else { 10 };
-            let code = VTCode::new(n, q, 0, 0);
+            let code = VTCode::new(n, q);
             let x: Vec<u8> = (0..code.k).map(|i| (i % 2) as u8).collect();
             let y = code.encode(&x);
 
@@ -1103,7 +1103,7 @@ mod tests {
         // This tests the reinterpretation where q is the max value, not alphabet size
         let q = 15u8;  // max value 15, alphabet has 16 symbols
         let n = 30u8;
-        let code = VTCode::new(n, q, 0, 0);
+        let code = VTCode::new(n, q);
 
         // Test encode/decode roundtrip
         let k = code.k as usize;
