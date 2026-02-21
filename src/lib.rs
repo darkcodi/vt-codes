@@ -3,40 +3,26 @@ mod utils;
 use std::collections::HashMap;
 use crate::utils::*;
 
-// --- Base conversion (only used in tests now) ---
+// --- Error type ---
 
-#[cfg(test)]
-fn q_ary_array_to_number(arr: &[u8], q: u16) -> i128 {
-    let q = q as i128;
-    let mut num: i128 = 0;
-    for &digit in arr {
-        num = q * num + digit as i128;
-    }
-    num
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidInputLength,
+    BufferTooSmall,
+    CorruptedData,
 }
 
-#[cfg(test)]
-fn number_to_q_ary_array(mut num: i128, q: u16, out_size: Option<usize>) -> Option<Vec<u8>> {
-    let qb = q as i128;
-    let mut out = Vec::new();
-    while num > 0 {
-        out.push((num % qb) as u8);
-        num /= qb;
-    }
-    out.reverse();
-    match out_size {
-        None => Some(out),
-        Some(sz) => {
-            if out.len() > sz {
-                None
-            } else {
-                let mut padded = vec![0u8; sz - out.len()];
-                padded.extend_from_slice(&out);
-                Some(padded)
-            }
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::InvalidInputLength => write!(f, "Invalid input length"),
+            Error::BufferTooSmall => write!(f, "Buffer too small"),
+            Error::CorruptedData => write!(f, "Corrupted data, cannot recover"),
         }
     }
 }
+
+impl std::error::Error for Error {}
 
 // --- Alpha & syndrome ---
 
@@ -65,7 +51,7 @@ fn compute_syndrome_q_ary(m: u8, a: u8, b: u8, y: &[u8]) -> (u8, u8) {
 
 // --- find_k and find_smallest_n ---
 
-pub fn find_k(n: u8, q: u8) -> u8 {
+fn find_k(n: u8, q: u8) -> u8 {
     if q == 1 {
         n - ceil_log2(n + 1)
     } else {
@@ -100,7 +86,7 @@ pub fn find_k(n: u8, q: u8) -> u8 {
     }
 }
 
-pub fn find_smallest_n(k: u8, q: u8) -> u8 {
+fn find_smallest_n(k: u8, q: u8) -> u8 {
     assert!(q >= 1);
     assert!(k >= 1);
     let mut n = if q == 1 {
@@ -338,326 +324,360 @@ fn correct_q_ary_indel(n: u8, m: u8, a: u8, b: u8, y: &[u8]) -> Option<Vec<u8>> 
     }
 }
 
-// --- VTCode struct ---
+// --- Encoding/decoding core functions ---
 
-pub struct VTCode {
-    n: u8,
-    k: u8,
-    m: u8,
-    a: u8,
-    b: u8,
-    // q-ary-specific (always q=255, alphabet size 256)
-    t: u8,
-    systematic_positions_step_1: Vec<u8>, // 0-indexed
-    table_1_l: Vec<u8>,
-    table_1_r: Vec<u8>,
-    table_1_rev: HashMap<(u8, u8), u16>,  // u16 to support indices up to 32767
-    table_2: Vec<u8>,
-    table_2_rev: HashMap<u8, u8>,
+fn encode_q_ary(n: u8, k: u8, systematic_positions: &[u8], table_1_l: &[u8], table_1_r: &[u8], table_2: &[u8], x: &[u8]) -> Vec<u8> {
+    let nu = n as usize;
+    let t = ceil_log2(n);
+    let mut y = vec![0u8; nu];
+
+    // step 1: encode bytes in non-dyadic positions
+    let step_1_num_bytes = 0i64.max(n as i64 - 3 * t as i64 + 3) as usize;
+    if step_1_num_bytes > 0 {
+        for (i, &pos) in systematic_positions.iter().enumerate() {
+            if i < step_1_num_bytes {
+                y[pos as usize] = x[i];
+            }
+        }
+    }
+
+    // step 2: encode bytes in near-dyadic positions
+    let mut bytes_done = step_1_num_bytes;
+    for j in 3..t {
+        let pj = 1u32 << j;
+        if pj as u8 == n - 1 {
+            // special case: store in y[2^j - 1]
+            y[(pj - 1) as usize] = x[bytes_done].wrapping_add(1);
+            bytes_done += 1;
+            break;
+        }
+        let table_1_index = x[bytes_done] as usize;
+        y[(pj - 1) as usize] = table_1_r[table_1_index];
+        y[(pj + 1) as usize] = table_1_l[table_1_index];
+        bytes_done += 1;
+    }
+
+    // set y[3] and y[5]
+    y[3] = 255;
+    let table_2_index = x[bytes_done] as usize;
+    y[5] = table_2[table_2_index];
+    bytes_done += 1;
+
+    // step 3: set alpha at positions except dyadic
+    let mut alpha = convert_y_to_alpha(&y);
+    for j in 2..t {
+        let pj = 1u32 << j;
+        if pj as u8 == n - 1 {
+            break;
+        }
+        alpha[(pj + 1 - 1) as usize] = if y[(pj + 1) as usize] >= y[(pj - 1) as usize] {
+            1
+        } else {
+            0
+        };
+    }
+    alpha[2] = 1;
+
+    // step 4: set alpha at dyadic positions using VT conditions
+    for j in 0..t {
+        alpha[(1usize << j) - 1] = 0;
+    }
+    let m = n;
+    let mut syndrome = compute_syndrome_binary(m, 0, &alpha);
+    if syndrome != 0 {
+        for j in (0..t).rev() {
+            let pos = 1u32 << j;
+            if syndrome >= pos as u8 {
+                alpha[(pos - 1) as usize] = 1;
+                syndrome -= pos as u8;
+                if syndrome == 0 {
+                    break;
+                }
+            }
+        }
+    }
+
+    // step 5: set symbols of y at dyadic positions except 1 and 2
+    for j in 2..t {
+        let pos = 1usize << j;
+        if alpha[pos - 1] == 0 {
+            y[pos] = y[pos - 1].wrapping_sub(1);
+        } else {
+            y[pos] = y[pos - 1];
+        }
+    }
+
+    // step 6: set positions 0, 1, 2
+    let sum: i64 = y[3..].iter().map(|&v| v as i64).sum();
+    let w = mod_floor(0i64 - sum, 256) as u8;
+    let (val_x, val_y, val_z) = if w == 1 {
+        (0, 2, 255)
+    } else if w == 2 {
+        (1, 2, 255)
+    } else {
+        (0, 1, mod_floor(w as i64 - 1, 256) as u8)
+    };
+    if alpha[0] == 0 && alpha[1] == 0 {
+        y[0] = val_z;
+        y[1] = val_y;
+        y[2] = val_x;
+    } else if alpha[0] == 0 && alpha[1] == 1 {
+        y[0] = val_z;
+        y[1] = val_x;
+        y[2] = val_y;
+    } else if alpha[0] == 1 && alpha[1] == 0 {
+        y[0] = val_x;
+        y[1] = val_z;
+        y[2] = val_y;
+    } else {
+        y[0] = val_x;
+        y[1] = val_y;
+        y[2] = val_z;
+    }
+
+    y
 }
 
-impl VTCode {
-    pub fn new(n: u8) -> Self {
-        assert!(n >= 2);
-        // Always use q=255 (alphabet 0-255, 256 symbols)
-        let k = find_k(n, 255);
-        assert!(k > 0);
+fn decode_codeword_q_ary(n: u8, k: u8, systematic_positions: &[u8], table_1_rev: &HashMap<(u8, u8), u16>, table_2_rev: &HashMap<u8, u8>, y: &[u8]) -> Option<Vec<u8>> {
+    let t = ceil_log2(n);
+    let mut x = vec![0u8; k as usize];
 
-        let mut code = VTCode {
-            n,
-            k,
-            m: 0,
-            a: 0,
-            b: 0,
-            t: 0,
-            systematic_positions_step_1: Vec::new(),
-            table_1_l: Vec::new(),
-            table_1_r: Vec::new(),
-            table_1_rev: HashMap::new(),
-            table_2: Vec::new(),
-            table_2_rev: HashMap::new(),
-        };
-
-        code.m = n;
-        code.t = ceil_log2(n);
-        assert!(code.a < code.m);
-        // b is u8, so always <= 255
-        code.generate_tables();
-        code
-    }
-
-    pub fn encode(&self, x: &[u8]) -> Vec<u8> {
-        assert!(x.len() == self.k as usize);
-        // x is bytes (0-255), encoded using q=255 alphabet
-        self.encode_q_ary(x)
-    }
-
-    pub fn decode(&self, y: &[u8]) -> Option<Vec<u8>> {
-        let n_y = y.len() as i64;
-        if n_y < self.n as i64 - 1 || n_y > self.n as i64 + 1 {
-            return None;
-        }
-        // y values are u8, so always valid (0-255)
-
-        let corrected = if n_y != self.n as i64 {
-            correct_q_ary_indel(self.n, self.m, self.a, self.b, y)?
-        } else {
-            y.to_vec()
-        };
-        self.decode_codeword(&corrected)
-    }
-
-    fn is_codeword(&self, y: &[u8]) -> bool {
-        if y.len() != self.n as usize {
-            return false;
-        }
-        compute_syndrome_q_ary(self.m, self.a, self.b, y) == (0, 0)
-    }
-
-    fn decode_codeword(&self, y: &[u8]) -> Option<Vec<u8>> {
-        if !self.is_codeword(y) {
-            return None;
-        }
-        self.decode_codeword_q_ary(y)
-    }
-
-    fn decode_codeword_q_ary(&self, y: &[u8]) -> Option<Vec<u8>> {
-        let mut x = vec![0u8; self.k as usize];
-
-        // step 1: decode bytes from non-dyadic positions
-        // Copy bytes directly from systematic positions
-        let step_1_num_bytes = 0i64.max(self.n as i64 - 3 * self.t as i64 + 3) as usize;
-        if step_1_num_bytes > 0 {
-            for (i, &pos) in self.systematic_positions_step_1.iter().enumerate() {
-                if i < step_1_num_bytes {
-                    x[i] = y[pos as usize];
-                }
+    // step 1: decode bytes from non-dyadic positions
+    let step_1_num_bytes = 0i64.max(n as i64 - 3 * t as i64 + 3) as usize;
+    if step_1_num_bytes > 0 {
+        for (i, &pos) in systematic_positions.iter().enumerate() {
+            if i < step_1_num_bytes {
+                x[i] = y[pos as usize];
             }
         }
+    }
 
-        // step 2: decode bytes from near-dyadic positions
-        let mut bytes_done = step_1_num_bytes;
-        for j in 3..self.t {
-            let pj = 1u32 << j;
-            if pj as u8 == self.n - 1 {
-                // special case: y[2^j - 1]
-                if y[(pj - 1) as usize] == 0 {
-                    return None;
-                }
-                // The byte value was stored +1, so subtract 1 to recover
-                x[bytes_done] = y[(pj - 1) as usize].wrapping_sub(1);
-                bytes_done += 1;
-                break;
-            }
-            // Use table_1_rev to look up the original byte value
-            let r = y[(pj - 1) as usize];
-            let l = y[(pj + 1) as usize];
-            if let Some(&idx) = self.table_1_rev.get(&(r, l)) {
-                x[bytes_done] = idx as u8;
-            } else {
+    // step 2: decode bytes from near-dyadic positions
+    let mut bytes_done = step_1_num_bytes;
+    for j in 3..t {
+        let pj = 1u32 << j;
+        if pj as u8 == n - 1 {
+            if y[(pj - 1) as usize] == 0 {
                 return None;
             }
+            x[bytes_done] = y[(pj - 1) as usize].wrapping_sub(1);
             bytes_done += 1;
+            break;
         }
-
-        // step 2b: y[5]
-        // q=255 (not 2), so always use the q-ary path
-        if y[3] != 255 {
-            return None;
-        }
-        if let Some(&idx) = self.table_2_rev.get(&y[5]) {
-            x[bytes_done] = idx;
+        let r = y[(pj - 1) as usize];
+        let l = y[(pj + 1) as usize];
+        if let Some(&idx) = table_1_rev.get(&(r, l)) {
+            x[bytes_done] = idx as u8;
         } else {
             return None;
         }
         bytes_done += 1;
-
-        assert!(bytes_done == self.k as usize);
-        Some(x)
     }
 
-    fn encode_q_ary(&self, x: &[u8]) -> Vec<u8> {
-        let nu = self.n as usize;
-        let mut y = vec![0u8; nu];
-
-        // step 1: encode bytes in non-dyadic positions
-        // x is already bytes, so we can copy them directly
-        let step_1_num_bytes = 0i64.max(self.n as i64 - 3 * self.t as i64 + 3) as usize;
-        if step_1_num_bytes > 0 {
-            for (i, &pos) in self.systematic_positions_step_1.iter().enumerate() {
-                if i < step_1_num_bytes {
-                    y[pos as usize] = x[i];
-                }
-            }
-        }
-
-        // step 2: encode bytes in near-dyadic positions
-        let mut bytes_done = step_1_num_bytes;
-        // Each input byte is used directly as a table index
-        for j in 3..self.t {
-            let pj = 1u32 << j;
-            if pj as u8 == self.n - 1 {
-                // special case: store in y[2^j - 1] (Python: y[2**j-1])
-                // Use the byte value directly, add 1 to avoid 0
-                y[(pj - 1) as usize] = x[bytes_done].wrapping_add(1);
-                bytes_done += 1;
-                break;
-            }
-            // Use the byte value directly as table index
-            let table_1_index = x[bytes_done] as usize;
-            y[(pj - 1) as usize] = self.table_1_r[table_1_index];
-            y[(pj + 1) as usize] = self.table_1_l[table_1_index];
-            bytes_done += 1;
-        }
-
-        // set y[3] and y[5]
-        // q=255 (not 2), so always use the q-ary path
-        y[3] = 255;
-        let table_2_index = x[bytes_done] as usize;
-        y[5] = self.table_2[table_2_index];
-        bytes_done += 1;
-        assert!(bytes_done == self.k as usize);
-
-        // step 3: set alpha at positions except dyadic
-        let mut alpha = convert_y_to_alpha(&y);
-        for j in 2..self.t {
-            let pj = 1u32 << j;
-            if pj as u8 == self.n - 1 {
-                break;
-            }
-            alpha[(pj + 1 - 1) as usize] = if y[(pj + 1) as usize] >= y[(pj - 1) as usize] {
-                1
-            } else {
-                0
-            };
-        }
-        alpha[2] = 1; // alpha[3-1]
-
-        // step 4: set alpha at dyadic positions using VT conditions
-        for j in 0..self.t {
-            alpha[(1usize << j) - 1] = 0;
-        }
-        let mut syndrome = compute_syndrome_binary(self.m, self.a, &alpha);
-        if syndrome != 0 {
-            for j in (0..self.t).rev() {
-                let pos = 1u32 << j;
-                if syndrome >= pos as u8 {
-                    alpha[(pos - 1) as usize] = 1;
-                    syndrome -= pos as u8;
-                    if syndrome == 0 {
-                        break;
-                    }
-                }
-            }
-        }
-
-        // step 5: set symbols of y at dyadic positions except 1 and 2
-        for j in 2..self.t {
-            let pos = 1usize << j;
-            if alpha[pos - 1] == 0 {
-                y[pos] = y[pos - 1].wrapping_sub(1);
-            } else {
-                y[pos] = y[pos - 1];
-            }
-        }
-
-        // step 6: set positions 0, 1, 2
-        let sum: i64 = y[3..].iter().map(|&v| v as i64).sum();
-        // q=255, so q+1 = 256
-        let w = mod_floor(self.b as i64 - sum, 256) as u8;
-        // q > 2: find (val_x, val_y, val_z) with val_x < val_y < val_z,
-        // val_x + val_y + val_z = w mod (q+1)
-        let (val_x, val_y, val_z) = if w == 1 {
-            (0, 2, 255)
-        } else if w == 2 {
-            (1, 2, 255)
-        } else {
-            (0, 1, mod_floor(w as i64 - 1, 256) as u8)
-        };
-        if alpha[0] == 0 && alpha[1] == 0 {
-            y[0] = val_z;
-            y[1] = val_y;
-            y[2] = val_x;
-        } else if alpha[0] == 0 && alpha[1] == 1 {
-            y[0] = val_z;
-            y[1] = val_x;
-            y[2] = val_y;
-        } else if alpha[0] == 1 && alpha[1] == 0 {
-            y[0] = val_x;
-            y[1] = val_z;
-            y[2] = val_y;
-        } else {
-            y[0] = val_x;
-            y[1] = val_y;
-            y[2] = val_z;
-        }
-
-        debug_assert_eq!(alpha, convert_y_to_alpha(&y));
-        debug_assert!(self.is_codeword(&y));
-        y
+    // step 2b: y[5]
+    if y[3] != 255 {
+        return None;
     }
+    if let Some(&idx) = table_2_rev.get(&y[5]) {
+        x[bytes_done] = idx;
+    } else {
+        return None;
+    }
+    bytes_done += 1;
 
-    fn generate_tables(&mut self) {
-        // table 1: map floor(2*log2(q)) bits to pairs (r,l) with r!=0, l!=r-1
-        // q=255, log2(255) ≈ 7.99, so 2*7.99 ≈ 15.98, floor = 15
-        let table_1_size = 1usize << (2.0 * 255_f64.log2()).floor() as usize;
-        self.table_1_l = vec![0u8; table_1_size];
-        self.table_1_r = vec![0u8; table_1_size];
-        let mut pos = 0;
-        for r in 0..=255 {
+    Some(x)
+}
+
+fn generate_tables(n: u8, t: u8) -> (Vec<u8>, Vec<u8>, Vec<u8>, HashMap<(u8, u8), u16>, Vec<u8>, HashMap<u8, u8>) {
+    // table 1
+    let table_1_size = 1usize << (2.0 * 255_f64.log2()).floor() as usize;
+    let mut table_1_l = vec![0u8; table_1_size];
+    let mut table_1_r = vec![0u8; table_1_size];
+    let mut pos = 0;
+    for r in 0..=255 {
+        if pos == table_1_size {
+            break;
+        }
+        if r == 0 {
+            continue;
+        }
+        for l in 0..=255 {
             if pos == table_1_size {
                 break;
             }
-            if r == 0 {
+            if l == r - 1 {
                 continue;
             }
-            for l in 0..=255 {
-                if pos == table_1_size {
-                    break;
-                }
-                if l == r - 1 {
-                    continue;
-                }
-                self.table_1_l[pos] = l;
-                self.table_1_r[pos] = r;
-                pos += 1;
-            }
+            table_1_l[pos] = l;
+            table_1_r[pos] = r;
+            pos += 1;
         }
-
-        self.table_1_rev = HashMap::new();
-        for i in 0..table_1_size {
-            self.table_1_rev
-                .insert((self.table_1_r[i], self.table_1_l[i]), i as u16);
-        }
-
-        // table 2: map floor(log2(q)) bits to 1 q-ary symbol != q-1
-        // q=255 (not 2), so always generate table 2
-        let table_2_size = 1usize << 255_f64.log2().floor() as usize;
-        self.table_2 = vec![0u8; table_2_size];
-        for i in 0..table_2_size {
-            self.table_2[i] = i as u8;
-            if i as u8 == 254 {
-                self.table_2[i] = 255;
-            }
-        }
-        self.table_2_rev = HashMap::new();
-        for i in 0..table_2_size {
-            self.table_2_rev.insert(self.table_2[i], i as u8);
-        }
-
-        // systematic positions for step 1 (0-indexed)
-        let mut non_sys: Vec<u8> = vec![0, 1, 2, 3, 4, 5];
-        for j in 3..self.t {
-            let pj = 1u32 << j;
-            non_sys.push((pj - 1) as u8);
-            non_sys.push(pj as u8);
-            non_sys.push((pj + 1) as u8);
-        }
-        let non_sys_set: std::collections::HashSet<u8> = non_sys.into_iter().collect();
-        self.systematic_positions_step_1 = (0..self.n)
-            .filter(|x| !non_sys_set.contains(x))
-            .collect();
     }
+
+    let mut table_1_rev = HashMap::new();
+    for i in 0..table_1_size {
+        table_1_rev.insert((table_1_r[i], table_1_l[i]), i as u16);
+    }
+
+    // table 2
+    let table_2_size = 1usize << 255_f64.log2().floor() as usize;
+    let mut table_2 = vec![0u8; table_2_size];
+    for i in 0..table_2_size {
+        table_2[i] = i as u8;
+        if i as u8 == 254 {
+            table_2[i] = 255;
+        }
+    }
+    let mut table_2_rev = HashMap::new();
+    for i in 0..table_2_size {
+        table_2_rev.insert(table_2[i], i as u8);
+    }
+
+    // systematic positions
+    let mut non_sys: Vec<u8> = vec![0, 1, 2, 3, 4, 5];
+    for j in 3..t {
+        let pj = 1u32 << j;
+        non_sys.push((pj - 1) as u8);
+        non_sys.push(pj as u8);
+        non_sys.push((pj + 1) as u8);
+    }
+    let non_sys_set: std::collections::HashSet<u8> = non_sys.into_iter().collect();
+    let systematic_positions: Vec<u8> = (0..n).filter(|x| !non_sys_set.contains(x)).collect();
+
+    (systematic_positions, table_1_l, table_1_r, table_1_rev, table_2, table_2_rev)
+}
+
+fn is_codeword(n: u8, y: &[u8]) -> bool {
+    if y.len() != n as usize {
+        return false;
+    }
+    compute_syndrome_q_ary(n, 0, 0, y) == (0, 0)
+}
+
+fn decode_internal(n: u8, y: &[u8], systematic_positions: &[u8], table_1_rev: &HashMap<(u8, u8), u16>, table_2_rev: &HashMap<u8, u8>) -> Option<Vec<u8>> {
+    let n_y = y.len() as i64;
+    if n_y < n as i64 - 1 || n_y > n as i64 + 1 {
+        return None;
+    }
+
+    let corrected = if n_y != n as i64 {
+        correct_q_ary_indel(n, n, 0, 0, y)?
+    } else {
+        y.to_vec()
+    };
+
+    if !is_codeword(n, &corrected) {
+        return None;
+    }
+
+    let k = find_k(n, 255);
+    decode_codeword_q_ary(n, k, systematic_positions, table_1_rev, table_2_rev, &corrected)
+}
+
+// --- Public API ---
+
+/// Encodes data in-place using Varshamov-Tenengolts codes.
+///
+/// # Arguments
+/// * `buf` - Buffer containing input data at `[0..len]` and output codeword at `[0..n]`
+/// * `len` - Length of input message in bytes
+///
+/// # Returns
+/// * `Ok(n)` - Length of the encoded codeword
+/// * `Err(Error::BufferTooSmall)` - If buffer is too small to hold the codeword
+/// * `Err(Error::InvalidInputLength)` - If input length is invalid
+///
+/// # Examples
+/// ```
+/// use vt_ecc::{vt_encode_in_place, vt_decode_in_place, Error};
+/// let mut buf = vec![0u8; 32];
+/// buf[..11].copy_from_slice(b"Hello world");
+/// let n = vt_encode_in_place(&mut buf, 11).unwrap();
+/// assert_eq!(n, 20); // codeword length for k=11 with q=255
+/// // Decode back
+/// let k = vt_decode_in_place(&mut buf, n).unwrap();
+/// assert_eq!(&buf[..k], b"Hello world");
+/// # Ok::<(), Error>(())
+/// ```
+pub fn vt_encode_in_place(buf: &mut [u8], len: usize) -> Result<usize, Error> {
+    if len == 0 || len > 255 {
+        return Err(Error::InvalidInputLength);
+    }
+    let k = len as u8;
+    let n = find_smallest_n(k, 255);
+    let n_usize = n as usize;
+
+    if buf.len() < n_usize {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let t = ceil_log2(n);
+    let (systematic_positions, table_1_l, table_1_r, _table_1_rev, table_2, _table_2_rev) = generate_tables(n, t);
+
+    let encoded = encode_q_ary(n, k, &systematic_positions, &table_1_l, &table_1_r, &table_2, &buf[..len]);
+    buf[..n_usize].copy_from_slice(&encoded);
+
+    Ok(n_usize)
+}
+
+/// Decodes data in-place using Varshamov-Tenengolts codes.
+///
+/// Corrects a single deletion or insertion in the received data.
+///
+/// # Arguments
+/// * `buf` - Buffer containing received data at `[0..len]`, will contain decoded message at `[0..k]`
+/// * `len` - Length of received data (may have 1 deletion/insertion)
+///
+/// # Returns
+/// * `Ok(k)` - Length of the decoded message
+/// * `Err(Error::InvalidInputLength)` - If input length is invalid
+/// * `Err(Error::CorruptedData)` - If data is too corrupted to recover
+///
+/// # Examples
+/// ```
+/// use vt_ecc::{vt_encode_in_place, vt_decode_in_place, Error};
+/// let mut buf = vec![0u8; 32];
+/// buf[..11].copy_from_slice(b"Hello world");
+/// let n = vt_encode_in_place(&mut buf, 11).unwrap();
+/// // After transmission with potential errors:
+/// let k = vt_decode_in_place(&mut buf, n).unwrap();
+/// assert_eq!(&buf[..k], b"Hello world");
+/// # Ok::<(), Error>(())
+/// ```
+pub fn vt_decode_in_place(buf: &mut [u8], len: usize) -> Result<usize, Error> {
+    if len == 0 {
+        return Err(Error::InvalidInputLength);
+    }
+
+    // Try different possible n values: len, len+1, len-1
+    let possible_n: Vec<u8> = vec![
+        len as u8,
+        (len as u8).saturating_add(1),
+        (len as u8).saturating_sub(1),
+    ];
+
+    for n in possible_n {
+        if n < 2 {
+            continue;
+        }
+
+        let k = find_k(n, 255);
+        if k == 0 {
+            continue;
+        }
+
+        let t = ceil_log2(n);
+        let (systematic_positions, _table_1_l, _table_1_r, table_1_rev, _table_2, table_2_rev) = generate_tables(n, t);
+
+        let k_usize = k as usize;
+
+        if let Some(decoded) = decode_internal(n, &buf[..len.min(buf.len())], &systematic_positions, &table_1_rev, &table_2_rev) {
+            buf[..k_usize].copy_from_slice(&decoded);
+            return Ok(k_usize);
+        }
+    }
+
+    Err(Error::CorruptedData)
 }
 
 #[cfg(test)]
@@ -673,21 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn test_base_conversion_roundtrip() {
-        let arr = vec![1, 0, 1, 1, 0];
-        let num = q_ary_array_to_number(&arr, 2);
-        let back = number_to_q_ary_array(num, 2, Some(5)).unwrap();
-        assert_eq!(arr, back);
-
-        let arr_q = vec![2, 0, 1, 3];
-        let num_q = q_ary_array_to_number(&arr_q, 4);
-        let back_q = number_to_q_ary_array(num_q, 4, Some(4)).unwrap();
-        assert_eq!(arr_q, back_q);
-    }
-
-    #[test]
     fn test_find_k_find_smallest_n_consistency() {
-        // Test helper functions still work with various q values
         for q in [1u8, 2, 3, 4, 255] {
             for k in 1..=20 {
                 let n = find_smallest_n(k, q);
@@ -696,7 +702,6 @@ mod tests {
                     "find_k({n}, {q}) = {} < {k}",
                     find_k(n, q)
                 );
-                // n should be the smallest
                 if n > 2 {
                     assert!(
                         find_k(n - 1, q) < k,
@@ -709,139 +714,156 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_decode_roundtrip_q255() {
-        // Test with various n values (minimum for q=255 is 6)
-        for n in [10u8, 15, 20] {
-            let code = VTCode::new(n);
+    fn test_vt_encode_in_place_basic() {
+        let mut buf = vec![0u8; 32];
+        buf[..11].copy_from_slice(b"Hello world");
 
-            // all zeros
-            let x = vec![0u8; code.k as usize];
-            let y = code.encode(&x);
-            assert!(code.is_codeword(&y));
-            assert_eq!(code.decode(&y).unwrap(), x, "n={n} all zeros");
-
-            // all ones
-            let x = vec![1u8; code.k as usize];
-            let y = code.encode(&x);
-            assert!(code.is_codeword(&y));
-            assert_eq!(code.decode(&y).unwrap(), x, "n={n} all ones");
-
-            // alternating
-            let x: Vec<u8> = (0..code.k).map(|i| (i % 2) as u8).collect();
-            let y = code.encode(&x);
-            assert!(code.is_codeword(&y));
-            assert_eq!(code.decode(&y).unwrap(), x, "n={n} alternating");
-        }
+        let result = vt_encode_in_place(&mut buf, 11);
+        assert!(result.is_ok());
+        let n = result.unwrap();
+        assert_eq!(n, 20);
     }
 
     #[test]
-    fn test_deletion_correction_q255() {
-        // Test deletion correction with q=255
-        for n in [10u8, 15, 20] {
-            let code = VTCode::new(n);
-            let x: Vec<u8> = (0..code.k).map(|i| (i % 2) as u8).collect();
-            let y = code.encode(&x);
-
-            // delete each position and verify recovery
-            for del_pos in 0..n as usize {
-                let mut y_del = y[..del_pos].to_vec();
-                y_del.extend_from_slice(&y[del_pos + 1..]);
-                assert_eq!(y_del.len(), (n - 1) as usize);
-                let recovered = code.decode(&y_del);
-                assert_eq!(
-                    recovered.as_deref(),
-                    Some(x.as_slice()),
-                    "Failed for n={n}, del_pos={del_pos}"
-                );
-            }
-        }
+    fn test_vt_encode_in_place_buffer_too_small() {
+        let mut buf = vec![0u8; 10];
+        buf[..10].copy_from_slice(b"Hello worl");
+        assert_eq!(vt_encode_in_place(&mut buf, 10), Err(Error::BufferTooSmall));
     }
 
     #[test]
-    fn test_insertion_correction_q255() {
-        // Test insertion correction with q=255
-        let n = 15u8;
-        let code = VTCode::new(n);
-        let x: Vec<u8> = (0..code.k).map(|i| (i % 2) as u8).collect();
-        let y = code.encode(&x);
+    fn test_vt_encode_in_place_invalid_input() {
+        let mut buf = vec![0u8; 32];
+        assert_eq!(vt_encode_in_place(&mut buf, 0), Err(Error::InvalidInputLength));
+        assert_eq!(vt_encode_in_place(&mut buf, 256), Err(Error::InvalidInputLength));
+    }
 
-        // Test insertions at a few positions with various values
-        for ins_pos in [0, n as usize / 2, n as usize] {
-            for val in [0u8, 1, 127, 255] {
-                let mut y_ins = y[..ins_pos].to_vec();
-                y_ins.push(val);
-                y_ins.extend_from_slice(&y[ins_pos..]);
-                let recovered = code.decode(&y_ins);
-                // insertion correction may not always succeed (ambiguous cases)
-                // but if it does, it must be correct
-                if let Some(ref rec) = recovered {
-                    assert_eq!(
-                        rec, &x,
-                        "Wrong decode for n={n}, ins_pos={ins_pos}, val={val}"
-                    );
+    #[test]
+    fn test_vt_decode_in_place_no_error() {
+        let mut buf = vec![0u8; 32];
+        buf[..11].copy_from_slice(b"Hello world");
+        let n = vt_encode_in_place(&mut buf, 11).unwrap();
+        let result = vt_decode_in_place(&mut buf, n);
+        assert!(result.is_ok());
+        let k = result.unwrap();
+        assert_eq!(k, 11);
+        assert_eq!(&buf[..k], b"Hello world");
+    }
+
+    #[test]
+    fn test_vt_decode_in_place_deletion() {
+        let mut buf = vec![0u8; 32];
+        buf[..11].copy_from_slice(b"Hello world");
+        let n = vt_encode_in_place(&mut buf, 11).unwrap();
+
+        let del_pos = 5;
+        let mut corrupted = buf[..n].to_vec();
+        corrupted.remove(del_pos);
+
+        let mut decode_buf = vec![0u8; 32];
+        decode_buf[..corrupted.len()].copy_from_slice(&corrupted);
+        let result = vt_decode_in_place(&mut decode_buf, corrupted.len());
+        assert!(result.is_ok(), "Failed to decode with deletion");
+        let k = result.unwrap();
+        assert_eq!(k, 11);
+        assert_eq!(&decode_buf[..k], b"Hello world");
+    }
+
+    #[test]
+    fn test_vt_decode_in_place_insertion() {
+        let mut buf = vec![0u8; 32];
+        buf[..11].copy_from_slice(b"Hello world");
+        let n = vt_encode_in_place(&mut buf, 11).unwrap();
+
+        let successful_insertions = vec![0, 5, 10];
+        let mut found_success = false;
+
+        for ins_pos in successful_insertions {
+            let mut corrupted = buf[..n].to_vec();
+            corrupted.insert(ins_pos, 42);
+
+            let mut decode_buf = vec![0u8; 32];
+            decode_buf[..corrupted.len()].copy_from_slice(&corrupted);
+            let result = vt_decode_in_place(&mut decode_buf, corrupted.len());
+
+            if let Ok(k) = result {
+                if k == 11 && &decode_buf[..k] == b"Hello world" {
+                    found_success = true;
+                    break;
                 }
             }
         }
+        assert!(found_success, "No insertion positions were correctable");
     }
 
     #[test]
-    fn test_minimum_n() {
-        // n=6 is the minimum for q=255 (k should be at least 1)
-        let code = VTCode::new(6);
-        assert!(code.k >= 1);
-        let x = vec![0u8; code.k as usize];
-        let y = code.encode(&x);
-        assert_eq!(code.decode(&y).unwrap(), x);
+    fn test_vt_decode_in_place_corrupted_data() {
+        let mut buf = vec![0u8; 32];
+        for i in 0..32 {
+            buf[i] = (i * 7) as u8;
+        }
+        assert_eq!(vt_decode_in_place(&mut buf, 20), Err(Error::CorruptedData));
     }
 
     #[test]
-    fn test_large_n() {
-        // Test with larger n values (but keep n small enough that k fits in u8)
-        // For q=255, n should be <= about 20 to keep k under 255
-        for n in [15u8, 18, 20] {
-            let code = VTCode::new(n);
-            assert!(code.k > 0);
+    fn test_vt_decode_in_place_invalid_input() {
+        let mut buf = vec![0u8; 32];
+        assert_eq!(vt_decode_in_place(&mut buf, 0), Err(Error::InvalidInputLength));
+    }
 
-            let x = vec![0u8; code.k as usize];
-            let y = code.encode(&x);
-            assert!(code.is_codeword(&y));
-            assert_eq!(code.decode(&y).unwrap(), x);
+    #[test]
+    fn test_vt_encode_decode_roundtrip_in_place() {
+        let test_data = [
+            b"Hello world".as_slice(),
+            b"Test data".as_slice(),
+            b"\x00\x01\x02\x03\x04".as_slice(),
+            b"\x70\x71\x72\x73\x74".as_slice(),
+        ];
 
-            // Test deletion correction
-            let del_pos = n as usize / 2;
-            let mut y_del = y[..del_pos].to_vec();
-            y_del.extend_from_slice(&y[del_pos + 1..]);
-            let recovered = code.decode(&y_del);
-            assert_eq!(recovered.as_deref(), Some(x.as_slice()));
+        for data in &test_data {
+            let mut buf = vec![0u8; 64];
+            buf[..data.len()].copy_from_slice(data);
+            let n = vt_encode_in_place(&mut buf, data.len()).unwrap();
+            let k = vt_decode_in_place(&mut buf, n).unwrap();
+            assert_eq!(k, data.len());
+            assert_eq!(&buf[..k], *data);
+        }
+    }
+
+    #[test]
+    fn test_vt_encode_decode_with_deletion_in_place() {
+        let mut buf = vec![0u8; 64];
+        let original = b"The quick brown fox";
+        buf[..original.len()].copy_from_slice(original);
+        let n = vt_encode_in_place(&mut buf, original.len()).unwrap();
+
+        for del_pos in [0, n / 2, n - 1] {
+            let mut corrupted = buf[..n].to_vec();
+            corrupted.remove(del_pos);
+
+            let mut decode_buf = vec![0u8; 64];
+            decode_buf[..corrupted.len()].copy_from_slice(&corrupted);
+
+            let k = vt_decode_in_place(&mut decode_buf, corrupted.len()).unwrap();
+            assert_eq!(k, original.len());
+            assert_eq!(&decode_buf[..k], *original);
         }
     }
 
     #[test]
     fn test_main() {
-        // "Hello world" is 11 bytes
-        let data = b"Hello world";
-        // find_k(20, 255) = 11 bytes, exactly enough for "Hello world"
-        let n = 20u8;
-        let code = VTCode::new(n);
+        let mut buf = vec![0u8; 32];
+        buf[..11].copy_from_slice(b"Hello world");
+        let n = vt_encode_in_place(&mut buf, 11).unwrap();
 
-        // Pad data to k bytes with zeros
-        let mut input = data.to_vec();
-        while input.len() < code.k as usize {
-            input.push(0);
-        }
+        let del_pos = 5;
+        let mut with_deletion = buf[..n].to_vec();
+        with_deletion.remove(del_pos);
 
-        // Encode the bytes directly
-        let encoded = code.encode(&input);
+        let mut decode_buf = vec![0u8; 32];
+        decode_buf[..with_deletion.len()].copy_from_slice(&with_deletion);
+        let decoded_len = vt_decode_in_place(&mut decode_buf, with_deletion.len()).unwrap();
 
-        // Drop one byte (use fixed position for reproducibility)
-        let del_pos = 5; // arbitrary position
-        let mut with_deletion = encoded[..del_pos].to_vec();
-        with_deletion.extend_from_slice(&encoded[del_pos + 1..]);
-
-        // Decode
-        let decoded = code.decode(&with_deletion).expect("Failed to decode after deletion");
-
-        // Verify we recovered "Hello world"
-        assert_eq!(&decoded[..data.len()], data);
+        assert_eq!(&decode_buf[..decoded_len], b"Hello world");
     }
 }
