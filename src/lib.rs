@@ -5,7 +5,7 @@ use crate::utils::*;
 
 // --- Base conversion () ---
 
-fn q_ary_array_to_number(arr: &[u8], q: u8) -> i128 {
+fn q_ary_array_to_number(arr: &[u8], q: u16) -> i128 {
     let q = q as i128; // i128 intermediates for overflow safety
     let mut num: i128 = 0;
     for &digit in arr {
@@ -14,7 +14,7 @@ fn q_ary_array_to_number(arr: &[u8], q: u8) -> i128 {
     num
 }
 
-fn number_to_q_ary_array(mut num: i128, q: u8, out_size: Option<usize>) -> Option<Vec<u8>> {
+fn number_to_q_ary_array(mut num: i128, q: u16, out_size: Option<usize>) -> Option<Vec<u8>> {
     let qb = q as i128;
     let mut out = Vec::new();
     while num > 0 {
@@ -36,7 +36,7 @@ fn number_to_q_ary_array(mut num: i128, q: u8, out_size: Option<usize>) -> Optio
     }
 }
 
-fn convert_base(in_array: &[u8], in_base: u8, out_base: u8, out_size: Option<usize>) -> Option<Vec<u8>> {
+fn convert_base(in_array: &[u8], in_base: u16, out_base: u16, out_size: Option<usize>) -> Option<Vec<u8>> {
     let num = q_ary_array_to_number(in_array, in_base);
     number_to_q_ary_array(num, out_base, out_size)
 }
@@ -61,33 +61,35 @@ fn compute_syndrome_q_ary(m: u8, a: u8, b: u8, q: u8, y: &[u8]) -> (u8, u8) {
     let alpha = convert_y_to_alpha(y);
     let s1 = compute_syndrome_binary(m, a, &alpha);
     let sum: i64 = y.iter().map(|&v| v as i64).sum();
-    let s2 = mod_floor(b as i64 - sum, q as i64) as u8;
+    let s2 = mod_floor(b as i64 - sum, q as i64 + 1) as u8;
     (s1, s2)
 }
 
 // --- find_k and find_smallest_n ---
 
 pub fn find_k(n: u8, q: u8) -> u8 {
-    if q == 2 {
+    if q == 1 {
         n - ceil_log2(n + 1)
     } else {
         let t = ceil_log2(n);
-        if q == 3 {
+        if q == 2 {
             if n < 7 {
                 return 0;
             }
+            let alphabet_size = (q as i64 + 1) as f64;
             if power_of_two(n - 1) {
-                ((n as i64 - 3 * t as i64 + 3) as f64 * (q as f64).log2()).floor() as i64 as u8 + 2 * (t - 4) + 1
+                ((n as i64 - 3 * t as i64 + 3) as f64 * alphabet_size.log2()).floor() as i64 as u8 + 2 * (t - 4) + 1
             } else {
-                ((n as i64 - 3 * t as i64 + 3) as f64 * (q as f64).log2()).floor() as i64 as u8 + 2 * (t - 3)
+                ((n as i64 - 3 * t as i64 + 3) as f64 * alphabet_size.log2()).floor() as i64 as u8 + 2 * (t - 3)
             }
         } else {
             if n < 6 {
                 return 0;
             }
-            let base = (0i64.max(n as i64 - 3 * t as i64 + 3) as f64 * (q as f64).log2()).floor() as i64;
-            let bits_per_tuple = (2.0 * ((q - 1) as f64).log2()).floor() as i64;
-            let bits_single = ((q - 1) as f64).log2().floor() as i64;
+            let alphabet_size = (q as i64 + 1) as f64;
+            let base = (0i64.max(n as i64 - 3 * t as i64 + 3) as f64 * alphabet_size.log2()).floor() as i64;
+            let bits_per_tuple = (2.0 * (q as f64).log2()).floor() as i64;
+            let bits_single = (q as f64).log2().floor() as i64;
             if power_of_two(n - 1) {
                 (base + bits_per_tuple * 0i64.max(t as i64 - 4) + 2 * bits_single) as u8
             } else {
@@ -98,13 +100,13 @@ pub fn find_k(n: u8, q: u8) -> u8 {
 }
 
 pub fn find_smallest_n(k: u8, q: u8) -> u8 {
-    assert!(q >= 2);
+    assert!(q >= 1);
     assert!(k >= 1);
-    let mut n = if q == 2 {
+    let mut n = if q == 1 {
         let sum = k as i64 + ceil_log2(k + 1) as i64;
         sum as u8
     } else {
-        k / ceil_log2(q)
+        k / ceil_log2((q as i16 + 1) as u8)
     };
     loop {
         if find_k(n, q) >= k {
@@ -244,7 +246,7 @@ fn correct_q_ary_indel(n: u8, m: u8, a: u8, b: u8, q: u8, y: &[u8]) -> Option<Ve
     if alpha.len() == nu - 2 {
         // deletion
         let sum: i64 = y.iter().map(|&v| v as i64).sum();
-        let error_symbol = mod_floor(b as i64 - sum, q as i64) as u8;
+        let error_symbol = mod_floor(b as i64 - sum, q as i64 + 1) as u8;
 
         // find diff_pos
         let diff_pos = if alpha == alpha_corrected[..alpha.len()] {
@@ -285,7 +287,7 @@ fn correct_q_ary_indel(n: u8, m: u8, a: u8, b: u8, q: u8, y: &[u8]) -> Option<Ve
     } else {
         // insertion
         let sum: i64 = y.iter().map(|&v| v as i64).sum();
-        let error_symbol = mod_floor(sum - b as i64, q as i64) as u8;
+        let error_symbol = mod_floor(sum - b as i64, q as i64 + 1) as u8;
 
         // find diff_pos
         let diff_pos = if alpha[..alpha_corrected.len()] == alpha_corrected[..] {
@@ -354,7 +356,7 @@ pub struct VTCode {
 
 impl VTCode {
     pub fn new(n: u8, q: u8, a: u8, b: u8) -> Self {
-        assert!(q >= 2);
+        assert!(q >= 1);
         assert!(n >= 2);
         let k = find_k(n, q);
         assert!(k > 0);
@@ -377,7 +379,7 @@ impl VTCode {
             table_2_rev: HashMap::new(),
         };
 
-        if q == 2 {
+        if q == 1 {
             code.m = n + 1;
             assert!(a < code.m);
             code.generate_systematic_positions_binary();
@@ -385,7 +387,7 @@ impl VTCode {
             code.m = n;
             code.t = ceil_log2(n);
             assert!(a < code.m);
-            assert!(b < q);
+            assert!(b <= q);
             code.generate_tables();
         }
         code
@@ -394,7 +396,7 @@ impl VTCode {
     pub fn encode(&self, x: &[u8]) -> Vec<u8> {
         assert!(x.len() == self.k as usize);
         assert!(x.iter().all(|&v| v == 0 || v == 1));
-        if self.q == 2 {
+        if self.q == 1 {
             self.encode_binary(x)
         } else {
             self.encode_q_ary(x)
@@ -406,10 +408,10 @@ impl VTCode {
         if n_y < self.n as i64 - 1 || n_y > self.n as i64 + 1 {
             return None;
         }
-        assert!(y.iter().all(|&v| v < self.q));
+        assert!(y.iter().all(|&v| v <= self.q));
 
         let corrected;
-        if self.q == 2 {
+        if self.q == 1 {
             if n_y != self.n as i64 {
                 corrected = correct_binary_indel(self.n, self.m, self.a, y)?;
             } else {
@@ -429,7 +431,7 @@ impl VTCode {
         if y.len() != self.n as usize {
             return false;
         }
-        if self.q == 2 {
+        if self.q == 1 {
             compute_syndrome_binary(self.m, self.a, y) == 0
         } else {
             compute_syndrome_q_ary(self.m, self.a, self.b, self.q, y) == (0, 0)
@@ -440,7 +442,7 @@ impl VTCode {
         if !self.is_codeword(y) {
             return None;
         }
-        if self.q == 2 {
+        if self.q == 1 {
             Some(self.decode_codeword_binary(y))
         } else {
             self.decode_codeword_q_ary(y)
@@ -458,25 +460,26 @@ impl VTCode {
         let mut x = vec![0u8; self.k as usize];
 
         // step 1
+        let alphabet_size = (self.q as i64 + 1) as f64;
         let step_1_num_bits =
-            (0i64.max(self.n as i64 - 3 * self.t as i64 + 3) as f64 * (self.q as f64).log2()).floor() as usize;
+            (0i64.max(self.n as i64 - 3 * self.t as i64 + 3) as f64 * alphabet_size.log2()).floor() as usize;
         if step_1_num_bits > 0 {
             let step_1_vals: Vec<u8> = self
                 .systematic_positions_step_1
                 .iter()
                 .map(|&pos| y[pos as usize])
                 .collect();
-            let step_1_bits = convert_base(&step_1_vals, self.q, 2, Some(step_1_num_bits))?;
+            let step_1_bits = convert_base(&step_1_vals, (self.q as i16 + 1) as u16, 2, Some(step_1_num_bits))?;
             x[..step_1_num_bits].copy_from_slice(&step_1_bits);
         }
 
         // step 2
         let mut bits_done = step_1_num_bits;
-        let bits_per_tuple = (2.0 * ((self.q - 1) as f64).log2()).floor() as usize;
+        let bits_per_tuple = (2.0 * (self.q as f64).log2()).floor() as usize;
         for j in 3..self.t {
             let pj = 1u32 << j; // 2^j
             if pj as u8 == self.n - 1 {
-                let num_bits_special = ((self.q - 1) as f64).log2().floor() as usize;
+                let num_bits_special = (self.q as f64).log2().floor() as usize;
                 // Python: y[2**j-1] means y[(2**j)-1]
                 if y[(pj - 1) as usize] == 0 {
                     return None;
@@ -505,15 +508,15 @@ impl VTCode {
         }
 
         // step 2b: y[5]
-        if self.q == 3 {
+        if self.q == 2 {
             if y[5] != 2 {
                 return None;
             }
         } else {
-            if y[3] != self.q - 1 {
+            if y[3] != self.q {
                 return None;
             }
-            let bits_in_c5 = ((self.q - 1) as f64).log2().floor() as usize;
+            let bits_in_c5 = (self.q as f64).log2().floor() as usize;
             if let Some(&idx) = self.table_2_rev.get(&y[5]) {
                 let bits = number_to_q_ary_array(idx as i128, 2, Some(bits_in_c5))?;
                 x[bits_done..bits_done + bits_in_c5].copy_from_slice(&bits);
@@ -558,11 +561,12 @@ impl VTCode {
         let mut y = vec![0u8; nu];
 
         // step 1: encode bits in non-dyadic positions
+        let alphabet_size = (self.q as i64 + 1) as f64;
         let step_1_num_bits =
-            (0i64.max(self.n as i64 - 3 * self.t as i64 + 3) as f64 * (self.q as f64).log2()).floor() as usize;
+            (0i64.max(self.n as i64 - 3 * self.t as i64 + 3) as f64 * alphabet_size.log2()).floor() as usize;
         if step_1_num_bits > 0 {
             let out_size = self.systematic_positions_step_1.len();
-            let vals = convert_base(&x[..step_1_num_bits], 2, self.q, Some(out_size))
+            let vals = convert_base(&x[..step_1_num_bits], 2, (self.q as i16 + 1) as u16, Some(out_size))
                 .expect("base conversion failed in encode step 1");
             for (i, &pos) in self.systematic_positions_step_1.iter().enumerate() {
                 y[pos as usize] = vals[i];
@@ -571,12 +575,12 @@ impl VTCode {
 
         // step 2: encode bits in near-dyadic positions
         let mut bits_done = step_1_num_bits;
-        let bits_per_tuple = (2.0 * ((self.q - 1) as f64).log2()).floor() as usize;
+        let bits_per_tuple = (2.0 * (self.q as f64).log2()).floor() as usize;
         for j in 3..self.t {
             let pj = 1u32 << j;
             if pj as u8 == self.n - 1 {
                 // special case: store in y[2^j - 1] (Python: y[2**j-1])
-                let num_bits_special = ((self.q - 1) as f64).log2().floor() as usize;
+                let num_bits_special = (self.q as f64).log2().floor() as usize;
                 y[(pj - 1) as usize] =
                     q_ary_array_to_number(&x[bits_done..bits_done + num_bits_special], 2) as u8
                         + 1;
@@ -591,11 +595,11 @@ impl VTCode {
         }
 
         // set y[3] and y[5]
-        y[3] = self.q - 1;
-        if self.q == 3 {
+        y[3] = self.q;
+        if self.q == 2 {
             y[5] = 2;
         } else {
-            let bits_in_c5 = ((self.q - 1) as f64).log2().floor() as usize;
+            let bits_in_c5 = (self.q as f64).log2().floor() as usize;
             let table_2_index =
                 q_ary_array_to_number(&x[bits_done..bits_done + bits_in_c5], 2) as usize;
             y[5] = self.table_2[table_2_index];
@@ -648,8 +652,8 @@ impl VTCode {
 
         // step 6: set positions 0, 1, 2
         let sum: i64 = y[3..].iter().map(|&v| v as i64).sum();
-        let w = mod_floor(self.b as i64 - sum, self.q as i64) as u8;
-        if self.q == 3 {
+        let w = mod_floor(self.b as i64 - sum, self.q as i64 + 1) as u8;
+        if self.q == 2 {
             if alpha[0] == 1 && alpha[1] == 1 {
                 y[2] = 2;
                 y[1] = 2;
@@ -683,14 +687,14 @@ impl VTCode {
                 y[0] = mod_floor(self.b as i64 - sum_b, 3) as u8;
             }
         } else {
-            // q > 3: find (val_x, val_y, val_z) with val_x < val_y < val_z,
-            // val_x + val_y + val_z = w mod q
+            // q > 2: find (val_x, val_y, val_z) with val_x < val_y < val_z,
+            // val_x + val_y + val_z = w mod (q+1)
             let (val_x, val_y, val_z) = if w == 1 {
-                (0, 2, self.q - 1)
+                (0, 2, self.q)
             } else if w == 2 {
-                (1, 2, self.q - 1)
+                (1, 2, self.q)
             } else {
-                (0, 1, mod_floor(w as i64 - 1, self.q as i64) as u8)
+                (0, 1, mod_floor(w as i64 - 1, self.q as i64 + 1) as u8)
             };
             if alpha[0] == 0 && alpha[1] == 0 {
                 y[0] = val_z;
@@ -734,19 +738,19 @@ impl VTCode {
     }
 
     fn generate_tables(&mut self) {
-        // table 1: map floor(2*log2(q-1)) bits to pairs (r,l) with r!=0, l!=r-1
-        let table_1_size = 1usize << (2.0 * ((self.q - 1) as f64).log2()).floor() as usize;
+        // table 1: map floor(2*log2(q)) bits to pairs (r,l) with r!=0, l!=r-1
+        let table_1_size = 1usize << (2.0 * (self.q as f64).log2()).floor() as usize;
         self.table_1_l = vec![0u8; table_1_size];
         self.table_1_r = vec![0u8; table_1_size];
         let mut pos = 0;
-        for r in 0..self.q {
+        for r in 0..=self.q {
             if pos == table_1_size {
                 break;
             }
             if r == 0 {
                 continue;
             }
-            for l in 0..self.q {
+            for l in 0..=self.q {
                 if pos == table_1_size {
                     break;
                 }
@@ -765,14 +769,14 @@ impl VTCode {
                 .insert((self.table_1_r[i], self.table_1_l[i]), i as u8);
         }
 
-        // table 2: map floor(log2(q-1)) bits to 1 q-ary symbol != q-2
-        if self.q != 3 {
-            let table_2_size = 1usize << ((self.q - 1) as f64).log2().floor() as usize;
+        // table 2: map floor(log2(q)) bits to 1 q-ary symbol != q-1
+        if self.q != 2 {
+            let table_2_size = 1usize << (self.q as f64).log2().floor() as usize;
             self.table_2 = vec![0u8; table_2_size];
             for i in 0..table_2_size {
                 self.table_2[i] = i as u8;
-                if i as u8 == self.q - 2 {
-                    self.table_2[i] = self.q - 1;
+                if i as u8 == self.q - 1 {
+                    self.table_2[i] = self.q;
                 }
             }
             self.table_2_rev = HashMap::new();
@@ -809,7 +813,7 @@ mod tests {
         // For each byte, create a VT code (8 bits per byte)
         // n=12 gives k=8 binary bits (exactly one byte)
         let n: u8 = 12;
-        let code = VTCode::new(n, 2, 0, 0);
+        let code = VTCode::new(n, 1, 0, 0);
         println!("VT code per byte: n={}, k={}", code.n, code.k);
 
         // Encode each byte
@@ -925,7 +929,7 @@ mod tests {
 
     #[test]
     fn test_find_k_find_smallest_n_consistency() {
-        for q in [2, 3, 4, 5] {
+        for q in [1, 2, 3, 4] {
             for k in 1..=20 {
                 let n = find_smallest_n(k, q);
                 assert!(
@@ -948,7 +952,7 @@ mod tests {
     #[test]
     fn test_binary_encode_decode_roundtrip() {
         for n in [7u8, 10, 15, 20, 31] {
-            let code = VTCode::new(n, 2, 0, 0);
+            let code = VTCode::new(n, 1, 0, 0);
             // all zeros
             let x = vec![0u8; code.k as usize];
             let y = code.encode(&x);
@@ -972,7 +976,7 @@ mod tests {
     #[test]
     fn test_binary_deletion_correction() {
         for n in [7u8, 10, 15, 20] {
-            let code = VTCode::new(n, 2, 0, 0);
+            let code = VTCode::new(n, 1, 0, 0);
             let x: Vec<u8> = (0..code.k).map(|i| ((i + 1) % 2) as u8).collect();
             let y = code.encode(&x);
 
@@ -994,7 +998,7 @@ mod tests {
     #[test]
     fn test_binary_insertion_correction() {
         for n in [7u8, 10, 15, 20] {
-            let code = VTCode::new(n, 2, 0, 0);
+            let code = VTCode::new(n, 1, 0, 0);
             let x: Vec<u8> = (0..code.k).map(|i| (i % 2) as u8).collect();
             let y = code.encode(&x);
 
@@ -1021,8 +1025,8 @@ mod tests {
 
     #[test]
     fn test_q_ary_encode_decode_roundtrip() {
-        for q in [3u8, 4, 5] {
-            let min_n = if q == 3 { 9 } else { 10 };
+        for q in [2u8, 3, 4] {
+            let min_n = if q == 2 { 9 } else { 10 };
             for n in [min_n, min_n + 5, min_n + 10] {
                 let code = VTCode::new(n, q, 0, 0);
                 // all zeros
@@ -1048,8 +1052,8 @@ mod tests {
 
     #[test]
     fn test_q_ary_deletion_correction() {
-        for q in [3u8, 4, 5] {
-            let n = if q == 3 { 9 } else { 10 };
+        for q in [2u8, 3, 4] {
+            let n = if q == 2 { 9 } else { 10 };
             let code = VTCode::new(n, q, 0, 0);
             let x: Vec<u8> = (0..code.k).map(|i| (i % 2) as u8).collect();
             let y = code.encode(&x);
@@ -1069,15 +1073,15 @@ mod tests {
 
     #[test]
     fn test_q_ary_insertion_correction() {
-        for q in [3u8, 4] {
-            let n = if q == 3 { 9 } else { 10 };
+        for q in [2u8, 3] {
+            let n = if q == 2 { 9 } else { 10 };
             let code = VTCode::new(n, q, 0, 0);
             let x: Vec<u8> = (0..code.k).map(|i| (i % 2) as u8).collect();
             let y = code.encode(&x);
 
             // insert each valid symbol at a few positions
             for ins_pos in [0, n as usize / 2, n as usize] {
-                for val in 0..q {
+                for val in 0..=q {
                     let mut y_ins = y[..ins_pos].to_vec();
                     y_ins.push(val);
                     y_ins.extend_from_slice(&y[ins_pos..]);
@@ -1091,5 +1095,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_large_alphabet() {
+        // q=15 means alphabet is {0, ..., 15} (16 symbols)
+        // This tests the reinterpretation where q is the max value, not alphabet size
+        let q = 15u8;  // max value 15, alphabet has 16 symbols
+        let n = 30u8;
+        let code = VTCode::new(n, q, 0, 0);
+
+        // Test encode/decode roundtrip
+        let k = code.k as usize;
+        let x: Vec<u8> = vec![0u8; k];
+        let y = code.encode(&x);
+        assert!(code.is_codeword(&y), "q=15: encoded zeros should be codeword");
+        assert_eq!(code.decode(&y).unwrap(), x, "q=15: decode zeros should match");
+
+        // Test with alternating pattern
+        let x_alt: Vec<u8> = (0..k).map(|i| (i % 2) as u8).collect();
+        let y_alt = code.encode(&x_alt);
+        assert!(code.is_codeword(&y_alt), "q=15: encoded alt should be codeword");
+        assert_eq!(code.decode(&y_alt).unwrap(), x_alt, "q=15: decode alt should match");
+
+        // Test deletion correction
+        let x: Vec<u8> = vec![0u8; k];
+        let y = code.encode(&x);
+
+        // delete one symbol
+        let del_pos = n as usize / 2;
+        let mut y_del = y[..del_pos].to_vec();
+        y_del.extend_from_slice(&y[del_pos + 1..]);
+        let recovered = code.decode(&y_del);
+        assert_eq!(recovered.as_deref(), Some(x.as_slice()), "q=15: deletion correction failed");
     }
 }
