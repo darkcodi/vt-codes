@@ -67,17 +67,9 @@ fn compute_syndrome_q_ary(m: u8, a: u8, b: u8, q: u8, y: &[u8]) -> (u8, u8) {
 
 // --- find_k and find_smallest_n ---
 
-pub fn find_k(n: u8, q: u8, correct_substitutions: bool) -> u8 {
-    if q != 2 && correct_substitutions {
-        panic!("correct_substitutions can be True only for q = 2");
-    }
+pub fn find_k(n: u8, q: u8) -> u8 {
     if q == 2 {
-        if !correct_substitutions {
-            n - ceil_log2(n + 1)
-        } else {
-            let n_plus = n as i64 + n as i64 + 1;
-            n - ceil_log2(n_plus as u8)
-        }
+        n - ceil_log2(n + 1)
     } else {
         let t = ceil_log2(n);
         if q == 3 {
@@ -105,26 +97,17 @@ pub fn find_k(n: u8, q: u8, correct_substitutions: bool) -> u8 {
     }
 }
 
-pub fn find_smallest_n(k: u8, q: u8, correct_substitutions: bool) -> u8 {
+pub fn find_smallest_n(k: u8, q: u8) -> u8 {
     assert!(q >= 2);
     assert!(k >= 1);
-    if q != 2 && correct_substitutions {
-        panic!("correct_substitutions can be True only for q = 2");
-    }
     let mut n = if q == 2 {
-        if !correct_substitutions {
-            let sum = k as i64 + ceil_log2(k + 1) as i64;
-            sum as u8
-        } else {
-            let two_k = k as i64 + k as i64 + 1;
-            let log_val = ceil_log2(two_k as u8);
-            (k as i64 + log_val as i64) as u8
-        }
+        let sum = k as i64 + ceil_log2(k + 1) as i64;
+        sum as u8
     } else {
         k / ceil_log2(q)
     };
     loop {
-        if find_k(n, q, correct_substitutions) >= k {
+        if find_k(n, q) >= k {
             break;
         }
         n += 1;
@@ -248,24 +231,6 @@ fn correct_binary_indel(n: u8, m: u8, a: u8, y: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-fn correct_binary_substitution(n: u8, m: u8, a: u8, y: &[u8]) -> Vec<u8> {
-    let m_expected = 2 * n + 1;
-    assert!(m == m_expected);
-    let s = compute_syndrome_binary(m, a, y);
-    let mut y_decoded = y.to_vec();
-    if s == 0 {
-        // no error
-    } else if s < n + 1 {
-        // 1 flipped to 0 at position s (1-indexed)
-        y_decoded[(s - 1) as usize] = 1;
-    } else {
-        // 0 flipped to 1 at position 2n+1-s (1-indexed)
-        let pos = (2 * n as i64 + 1 - s as i64 - 1) as usize;
-        y_decoded[pos] = 0;
-    }
-    y_decoded
-}
-
 fn correct_q_ary_indel(n: u8, m: u8, a: u8, b: u8, q: u8, y: &[u8]) -> Option<Vec<u8>> {
     let alpha = convert_y_to_alpha(y);
     let alpha_corrected = correct_binary_indel(n - 1, m, a, &alpha)?;
@@ -374,7 +339,6 @@ pub struct VTCode {
     m: u8,
     a: u8,
     b: u8,
-    correct_substitutions: bool,
     // binary-specific (1-indexed)
     systematic_positions: Vec<u8>,
     parity_positions: Vec<u8>,
@@ -389,10 +353,10 @@ pub struct VTCode {
 }
 
 impl VTCode {
-    pub fn new(n: u8, q: u8, a: u8, b: u8, correct_substitutions: bool) -> Self {
+    pub fn new(n: u8, q: u8, a: u8, b: u8) -> Self {
         assert!(q >= 2);
         assert!(n >= 2);
-        let k = find_k(n, q, correct_substitutions);
+        let k = find_k(n, q);
         assert!(k > 0);
 
         let mut code = VTCode {
@@ -402,7 +366,6 @@ impl VTCode {
             m: 0,
             a,
             b,
-            correct_substitutions,
             systematic_positions: Vec::new(),
             parity_positions: Vec::new(),
             t: 0,
@@ -415,11 +378,7 @@ impl VTCode {
         };
 
         if q == 2 {
-            code.m = if !correct_substitutions {
-                n + 1
-            } else {
-                2 * n + 1
-            };
+            code.m = n + 1;
             assert!(a < code.m);
             code.generate_systematic_positions_binary();
         } else {
@@ -453,8 +412,6 @@ impl VTCode {
         if self.q == 2 {
             if n_y != self.n as i64 {
                 corrected = correct_binary_indel(self.n, self.m, self.a, y)?;
-            } else if self.correct_substitutions && !self.is_codeword(y) {
-                corrected = correct_binary_substitution(self.n, self.m, self.a, y);
             } else {
                 corrected = y.to_vec();
             }
@@ -766,16 +723,6 @@ impl VTCode {
         for i in 0..t as usize {
             parity[i] = 1 << i;
         }
-        if self.correct_substitutions {
-            assert!(num_parity == (t + 1) as usize);
-            let tu = t as usize;
-            if parity[tu - 1] == self.n {
-                parity[tu - 1] = self.n - 1;
-                parity[tu] = self.n;
-            } else {
-                parity[tu] = self.n;
-            }
-        }
         parity.sort();
         self.parity_positions = parity;
 
@@ -862,7 +809,7 @@ mod tests {
         // For each byte, create a VT code (8 bits per byte)
         // n=12 gives k=8 binary bits (exactly one byte)
         let n: u8 = 12;
-        let code = VTCode::new(n, 2, 0, 0, false);
+        let code = VTCode::new(n, 2, 0, 0);
         println!("VT code per byte: n={}, k={}", code.n, code.k);
 
         // Encode each byte
@@ -980,16 +927,16 @@ mod tests {
     fn test_find_k_find_smallest_n_consistency() {
         for q in [2, 3, 4, 5] {
             for k in 1..=20 {
-                let n = find_smallest_n(k, q, false);
+                let n = find_smallest_n(k, q);
                 assert!(
-                    find_k(n, q, false) >= k,
+                    find_k(n, q) >= k,
                     "find_k({n}, {q}) = {} < {k}",
-                    find_k(n, q, false)
+                    find_k(n, q)
                 );
                 // n should be the smallest
                 if n > 2 {
                     assert!(
-                        find_k(n - 1, q, false) < k,
+                        find_k(n - 1, q) < k,
                         "n-1={} also works for k={k}, q={q}",
                         n - 1
                     );
@@ -1001,7 +948,7 @@ mod tests {
     #[test]
     fn test_binary_encode_decode_roundtrip() {
         for n in [7u8, 10, 15, 20, 31] {
-            let code = VTCode::new(n, 2, 0, 0, false);
+            let code = VTCode::new(n, 2, 0, 0);
             // all zeros
             let x = vec![0u8; code.k as usize];
             let y = code.encode(&x);
@@ -1025,7 +972,7 @@ mod tests {
     #[test]
     fn test_binary_deletion_correction() {
         for n in [7u8, 10, 15, 20] {
-            let code = VTCode::new(n, 2, 0, 0, false);
+            let code = VTCode::new(n, 2, 0, 0);
             let x: Vec<u8> = (0..code.k).map(|i| ((i + 1) % 2) as u8).collect();
             let y = code.encode(&x);
 
@@ -1047,7 +994,7 @@ mod tests {
     #[test]
     fn test_binary_insertion_correction() {
         for n in [7u8, 10, 15, 20] {
-            let code = VTCode::new(n, 2, 0, 0, false);
+            let code = VTCode::new(n, 2, 0, 0);
             let x: Vec<u8> = (0..code.k).map(|i| (i % 2) as u8).collect();
             let y = code.encode(&x);
 
@@ -1073,32 +1020,11 @@ mod tests {
     }
 
     #[test]
-    fn test_binary_substitution_correction() {
-        for n in [7u8, 10, 15, 20] {
-            let code = VTCode::new(n, 2, 0, 0, true);
-            let x: Vec<u8> = (0..code.k).map(|i| ((i + 1) % 2) as u8).collect();
-            let y = code.encode(&x);
-
-            // flip each bit
-            for flip_pos in 0..n as usize {
-                let mut y_sub = y.clone();
-                y_sub[flip_pos] = 1 - y_sub[flip_pos];
-                let recovered = code.decode(&y_sub);
-                assert_eq!(
-                    recovered.as_deref(),
-                    Some(x.as_slice()),
-                    "Failed for n={n}, flip_pos={flip_pos}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn test_q_ary_encode_decode_roundtrip() {
         for q in [3u8, 4, 5] {
             let min_n = if q == 3 { 9 } else { 10 };
             for n in [min_n, min_n + 5, min_n + 10] {
-                let code = VTCode::new(n, q, 0, 0, false);
+                let code = VTCode::new(n, q, 0, 0);
                 // all zeros
                 let x = vec![0u8; code.k as usize];
                 let y = code.encode(&x);
@@ -1124,7 +1050,7 @@ mod tests {
     fn test_q_ary_deletion_correction() {
         for q in [3u8, 4, 5] {
             let n = if q == 3 { 9 } else { 10 };
-            let code = VTCode::new(n, q, 0, 0, false);
+            let code = VTCode::new(n, q, 0, 0);
             let x: Vec<u8> = (0..code.k).map(|i| (i % 2) as u8).collect();
             let y = code.encode(&x);
 
@@ -1145,7 +1071,7 @@ mod tests {
     fn test_q_ary_insertion_correction() {
         for q in [3u8, 4] {
             let n = if q == 3 { 9 } else { 10 };
-            let code = VTCode::new(n, q, 0, 0, false);
+            let code = VTCode::new(n, q, 0, 0);
             let x: Vec<u8> = (0..code.k).map(|i| (i % 2) as u8).collect();
             let y = code.encode(&x);
 
