@@ -682,34 +682,69 @@ pub fn vt_decode_in_place(buf: &mut [u8], len: usize) -> Result<usize, Error> {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+    extern crate std;
+
     use super::*;
+    use alloc::vec;
 
     #[test]
-    fn test_main() {
-        let mut buf = vec![0u8; 32];
-        buf[..11].copy_from_slice(b"Hello world");
-        let n = vt_encode_in_place(&mut buf, 11).unwrap();
+    fn test_insertions() {
+        // arrange
+        let data = b"Hello world";
+        let len = data.len();
+        let mut buf = vec![0u8; 256];
+        buf[..len].copy_from_slice(data);
 
-        for del_pos in 0..n {
-            let mut with_deletion = buf[..n].to_vec();
-            with_deletion.remove(del_pos as usize);
+        // act
+        let n = vt_encode_in_place(&mut buf, len).unwrap();
+        std::println!("Encoded frame ({} bytes): {:02X?}", n, &buf[..n]);
 
-            let mut decode_buf = vec![0u8; 32];
-            decode_buf[..with_deletion.len()].copy_from_slice(&with_deletion);
-            let decoded_len = vt_decode_in_place(&mut decode_buf, with_deletion.len()).unwrap();
-
-            assert_eq!(&decode_buf[..decoded_len], b"Hello world", "Failed to decode with deletion at position {del_pos}");
-        }
-
+        // assert: try inserting a byte at every position and verify it decodes correctly (removing the inserted byte).
         for ins_pos in 0..=n {
             let mut with_insertion = buf[..n].to_vec();
-            with_insertion.insert(ins_pos as usize, 0x2A);
+            with_insertion.insert(ins_pos, 0x2A);
+            std::println!("With insertion at position {}: {:02X?}", ins_pos, &with_insertion);
 
-            let mut decode_buf = vec![0u8; 32];
+            let mut decode_buf = vec![0u8; 256];
             decode_buf[..with_insertion.len()].copy_from_slice(&with_insertion);
             let decoded_len = vt_decode_in_place(&mut decode_buf, with_insertion.len()).unwrap();
 
-            assert_eq!(&decode_buf[..decoded_len], b"Hello world", "Failed to decode with insertion at position {ins_pos}");
+            assert_eq!(
+                &decode_buf[..decoded_len],
+                data,
+                "Failed to decode with insertion at position {ins_pos}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_deletions() {
+        // arrange
+        let data = b"Hello world";
+        let len = data.len();
+        let mut buf = vec![0u8; 256];
+        buf[..len].copy_from_slice(data);
+
+        // act
+        let n = vt_encode_in_place(&mut buf, len).unwrap();
+        std::println!("Encoded frame ({} bytes): {:02X?}", n, &buf[..n]);
+
+        // assert: try deleting a byte at every position and verify it reports a valid deletion position.
+        for del_pos in 0..n {
+            let mut with_deletion = buf[..n].to_vec();
+            with_deletion.remove(del_pos);
+            std::println!("With deletion at position {}: {:02X?}", del_pos, &with_deletion);
+
+            let mut decode_buf = vec![0u8; 256];
+            decode_buf[..with_deletion.len()].copy_from_slice(&with_deletion);
+            let decoded_len = vt_decode_in_place(&mut decode_buf, with_deletion.len()).unwrap();
+
+            assert_eq!(
+                &decode_buf[..decoded_len],
+                data,
+                "Failed to decode with deletion at position {del_pos}"
+            );
         }
     }
 }
