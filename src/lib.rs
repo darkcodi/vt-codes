@@ -3,10 +3,11 @@ mod utils;
 use std::collections::HashMap;
 use crate::utils::*;
 
-// --- Base conversion () ---
+// --- Base conversion (only used in tests now) ---
 
+#[cfg(test)]
 fn q_ary_array_to_number(arr: &[u8], q: u16) -> i128 {
-    let q = q as i128; // i128 intermediates for overflow safety
+    let q = q as i128;
     let mut num: i128 = 0;
     for &digit in arr {
         num = q * num + digit as i128;
@@ -14,6 +15,7 @@ fn q_ary_array_to_number(arr: &[u8], q: u16) -> i128 {
     num
 }
 
+#[cfg(test)]
 fn number_to_q_ary_array(mut num: i128, q: u16, out_size: Option<usize>) -> Option<Vec<u8>> {
     let qb = q as i128;
     let mut out = Vec::new();
@@ -34,11 +36,6 @@ fn number_to_q_ary_array(mut num: i128, q: u16, out_size: Option<usize>) -> Opti
             }
         }
     }
-}
-
-fn convert_base(in_array: &[u8], in_base: u16, out_base: u16, out_size: Option<usize>) -> Option<Vec<u8>> {
-    let num = q_ary_array_to_number(in_array, in_base);
-    number_to_q_ary_array(num, out_base, out_size)
 }
 
 // --- Alpha & syndrome ---
@@ -84,17 +81,20 @@ pub fn find_k(n: u8, q: u8) -> u8 {
                 ((n as i64 - 3 * t as i64 + 3) as f64 * alphabet_size.log2()).floor() as i64 as u8 + 2 * (t - 3)
             }
         } else {
+            // For q > 2 (specifically q=255), we work with bytes directly
             if n < 6 {
                 return 0;
             }
-            let alphabet_size = (q as i64 + 1) as f64;
-            let base = (0i64.max(n as i64 - 3 * t as i64 + 3) as f64 * alphabet_size.log2()).floor() as i64;
-            let bits_per_tuple = (2.0 * (q as f64).log2()).floor() as i64;
-            let bits_single = (q as f64).log2().floor() as i64;
+            // Each position stores 1 byte directly, no conversion needed
+            let base = 0i64.max(n as i64 - 3 * t as i64 + 3);
+            // Each iteration of step 2 stores 1 byte
+            let bytes_per_tuple = 1i64;
+            // Step 2b stores 1 byte
+            let bytes_single = 1i64;
             if power_of_two(n - 1) {
-                (base + bits_per_tuple * 0i64.max(t as i64 - 4) + 2 * bits_single) as u8
+                (base + bytes_per_tuple * 0i64.max(t as i64 - 4) + 2 * bytes_single) as u8
             } else {
-                (base + bits_per_tuple * 0i64.max(t as i64 - 3) + bits_single) as u8
+                (base + bytes_per_tuple * 0i64.max(t as i64 - 3) + bytes_single) as u8
             }
         }
     }
@@ -388,7 +388,7 @@ impl VTCode {
 
     pub fn encode(&self, x: &[u8]) -> Vec<u8> {
         assert!(x.len() == self.k as usize);
-        // x is binary (bits), will be encoded using q=255 alphabet
+        // x is bytes (0-255), encoded using q=255 alphabet
         self.encode_q_ary(x)
     }
 
@@ -424,53 +424,40 @@ impl VTCode {
     fn decode_codeword_q_ary(&self, y: &[u8]) -> Option<Vec<u8>> {
         let mut x = vec![0u8; self.k as usize];
 
-        // step 1
-        // q=255, alphabet_size = 256
-        let step_1_num_bits =
-            (0i64.max(self.n as i64 - 3 * self.t as i64 + 3) as f64 * 8.0).floor() as usize;
-        if step_1_num_bits > 0 {
-            let step_1_vals: Vec<u8> = self
-                .systematic_positions_step_1
-                .iter()
-                .map(|&pos| y[pos as usize])
-                .collect();
-            let step_1_bits = convert_base(&step_1_vals, 256, 2, Some(step_1_num_bits))?;
-            x[..step_1_num_bits].copy_from_slice(&step_1_bits);
+        // step 1: decode bytes from non-dyadic positions
+        // Copy bytes directly from systematic positions
+        let step_1_num_bytes = 0i64.max(self.n as i64 - 3 * self.t as i64 + 3) as usize;
+        if step_1_num_bytes > 0 {
+            for (i, &pos) in self.systematic_positions_step_1.iter().enumerate() {
+                if i < step_1_num_bytes {
+                    x[i] = y[pos as usize];
+                }
+            }
         }
 
-        // step 2
-        let mut bits_done = step_1_num_bits;
-        // q=255, log2(255) ≈ 7.99, floor = 7, 2 * 7.99 ≈ 15.98, floor = 15
-        let bits_per_tuple = (2.0 * 255_f64.log2()).floor() as usize;
+        // step 2: decode bytes from near-dyadic positions
+        let mut bytes_done = step_1_num_bytes;
         for j in 3..self.t {
-            let pj = 1u32 << j; // 2^j
+            let pj = 1u32 << j;
             if pj as u8 == self.n - 1 {
-                let num_bits_special = 255_f64.log2().floor() as usize;
-                // Python: y[2**j-1] means y[(2**j)-1]
+                // special case: y[2^j - 1]
                 if y[(pj - 1) as usize] == 0 {
                     return None;
                 }
-                let bits = number_to_q_ary_array(
-                    (y[(pj - 1) as usize] - 1) as i128,
-                    2,
-                    Some(num_bits_special),
-                )?;
-                x[bits_done..bits_done + num_bits_special].copy_from_slice(&bits);
-                bits_done += num_bits_special;
+                // The byte value was stored +1, so subtract 1 to recover
+                x[bytes_done] = y[(pj - 1) as usize].wrapping_sub(1);
+                bytes_done += 1;
                 break;
             }
-            // Python: y[2**j-1] is index 2^j - 1, y[2**j+1] is index 2^j + 1
-            // but in Python the table uses (y[2**j-1], y[2**j+1]) where these are
-            // 0-indexed array accesses at positions 2^j-1 and 2^j+1
+            // Use table_1_rev to look up the original byte value
             let r = y[(pj - 1) as usize];
             let l = y[(pj + 1) as usize];
             if let Some(&idx) = self.table_1_rev.get(&(r, l)) {
-                let bits = number_to_q_ary_array(idx as i128, 2, Some(bits_per_tuple))?;
-                x[bits_done..bits_done + bits_per_tuple].copy_from_slice(&bits);
+                x[bytes_done] = idx as u8;
             } else {
                 return None;
             }
-            bits_done += bits_per_tuple;
+            bytes_done += 1;
         }
 
         // step 2b: y[5]
@@ -478,16 +465,14 @@ impl VTCode {
         if y[3] != 255 {
             return None;
         }
-        let bits_in_c5 = 255_f64.log2().floor() as usize;
         if let Some(&idx) = self.table_2_rev.get(&y[5]) {
-            let bits = number_to_q_ary_array(idx as i128, 2, Some(bits_in_c5))?;
-            x[bits_done..bits_done + bits_in_c5].copy_from_slice(&bits);
+            x[bytes_done] = idx;
         } else {
             return None;
         }
-        bits_done += bits_in_c5;
+        bytes_done += 1;
 
-        assert!(bits_done == self.k as usize);
+        assert!(bytes_done == self.k as usize);
         Some(x)
     }
 
@@ -495,50 +480,43 @@ impl VTCode {
         let nu = self.n as usize;
         let mut y = vec![0u8; nu];
 
-        // step 1: encode bits in non-dyadic positions
-        // q=255, alphabet_size = 256, log2(256) = 8
-        let step_1_num_bits =
-            (0i64.max(self.n as i64 - 3 * self.t as i64 + 3) as f64 * 8.0).floor() as usize;
-        if step_1_num_bits > 0 {
-            let out_size = self.systematic_positions_step_1.len();
-            let vals = convert_base(&x[..step_1_num_bits], 2, 256, Some(out_size))
-                .expect("base conversion failed in encode step 1");
+        // step 1: encode bytes in non-dyadic positions
+        // x is already bytes, so we can copy them directly
+        let step_1_num_bytes = 0i64.max(self.n as i64 - 3 * self.t as i64 + 3) as usize;
+        if step_1_num_bytes > 0 {
             for (i, &pos) in self.systematic_positions_step_1.iter().enumerate() {
-                y[pos as usize] = vals[i];
+                if i < step_1_num_bytes {
+                    y[pos as usize] = x[i];
+                }
             }
         }
 
-        // step 2: encode bits in near-dyadic positions
-        let mut bits_done = step_1_num_bits;
-        // q=255, log2(255) ≈ 7.99, floor = 7, 2 * 7.99 ≈ 15.98, floor = 15
-        let bits_per_tuple = (2.0 * 255_f64.log2()).floor() as usize;
+        // step 2: encode bytes in near-dyadic positions
+        let mut bytes_done = step_1_num_bytes;
+        // Each input byte is used directly as a table index
         for j in 3..self.t {
             let pj = 1u32 << j;
             if pj as u8 == self.n - 1 {
                 // special case: store in y[2^j - 1] (Python: y[2**j-1])
-                let num_bits_special = 255_f64.log2().floor() as usize;
-                y[(pj - 1) as usize] =
-                    q_ary_array_to_number(&x[bits_done..bits_done + num_bits_special], 2) as u8
-                        + 1;
-                bits_done += num_bits_special;
+                // Use the byte value directly, add 1 to avoid 0
+                y[(pj - 1) as usize] = x[bytes_done].wrapping_add(1);
+                bytes_done += 1;
                 break;
             }
-            let table_1_index =
-                q_ary_array_to_number(&x[bits_done..bits_done + bits_per_tuple], 2) as usize;
+            // Use the byte value directly as table index
+            let table_1_index = x[bytes_done] as usize;
             y[(pj - 1) as usize] = self.table_1_r[table_1_index];
             y[(pj + 1) as usize] = self.table_1_l[table_1_index];
-            bits_done += bits_per_tuple;
+            bytes_done += 1;
         }
 
         // set y[3] and y[5]
         // q=255 (not 2), so always use the q-ary path
         y[3] = 255;
-        let bits_in_c5 = 255_f64.log2().floor() as usize;
-        let table_2_index =
-            q_ary_array_to_number(&x[bits_done..bits_done + bits_in_c5], 2) as usize;
+        let table_2_index = x[bytes_done] as usize;
         y[5] = self.table_2[table_2_index];
-        bits_done += bits_in_c5;
-        assert!(bits_done == self.k as usize);
+        bytes_done += 1;
+        assert!(bytes_done == self.k as usize);
 
         // step 3: set alpha at positions except dyadic
         let mut alpha = convert_y_to_alpha(&y);
@@ -840,45 +818,30 @@ mod tests {
 
     #[test]
     fn test_main() {
-        // "Hello world" is 11 bytes = 88 bits
+        // "Hello world" is 11 bytes
         let data = b"Hello world";
-        let n = 19u8; // find_k(19, 255) = 93 bits, enough for 88 bits
+        // find_k(20, 255) = 11 bytes, exactly enough for "Hello world"
+        let n = 20u8;
         let code = VTCode::new(n);
 
-        // Convert bytes to bits
-        let mut bits = Vec::with_capacity(88);
-        for &byte in data {
-            for i in (0..8).rev() {
-                bits.push((byte >> i) & 1);
-            }
-        }
-        // Pad to k bits
-        while bits.len() < code.k as usize {
-            bits.push(0);
+        // Pad data to k bytes with zeros
+        let mut input = data.to_vec();
+        while input.len() < code.k as usize {
+            input.push(0);
         }
 
-        // Encode
-        let encoded = code.encode(&bits);
+        // Encode the bytes directly
+        let encoded = code.encode(&input);
 
-        // Drop one random byte (use fixed seed for reproducibility)
+        // Drop one byte (use fixed position for reproducibility)
         let del_pos = 5; // arbitrary position
         let mut with_deletion = encoded[..del_pos].to_vec();
         with_deletion.extend_from_slice(&encoded[del_pos + 1..]);
 
         // Decode
-        let decoded_bits = code.decode(&with_deletion).expect("Failed to decode after deletion");
-
-        // Convert back to bytes
-        let mut decoded_bytes = Vec::new();
-        for chunk in decoded_bits.chunks(8) {
-            let mut byte = 0u8;
-            for (i, &bit) in chunk.iter().enumerate() {
-                byte |= bit << (7 - i);
-            }
-            decoded_bytes.push(byte);
-        }
+        let decoded = code.decode(&with_deletion).expect("Failed to decode after deletion");
 
         // Verify we recovered "Hello world"
-        assert_eq!(&decoded_bytes[..data.len()], data);
+        assert_eq!(&decoded[..data.len()], data);
     }
 }
