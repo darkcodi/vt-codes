@@ -842,31 +842,104 @@ mod tests {
 
     #[test]
     fn main_test() {
-        // Demo: binary VT code
-        let code = VTCode::new(7, 2, 0, 0, false);
-        println!("Binary VT code: n={}, k={}, q={}", code.n, code.k, code.q);
-        let x = vec![1, 0, 1, 1];
-        let y = code.encode(&x);
-        println!("  message:  {:?}", x);
-        println!("  encoded:  {:?}", y);
-        let decoded = code.decode(&y).unwrap();
-        println!("  decoded:  {:?}", decoded);
+        let message = b"Hello world";
+        println!("Original message: {:?}", std::str::from_utf8(message).unwrap());
+        println!("Message length: {} bytes", message.len());
 
-        // Demo: correct a deletion
-        let y_del: Vec<i64> = y[..y.len() - 1].to_vec(); // delete last symbol
-        println!("After deleting last symbol: {:?}", y_del);
-        let recovered = code.decode(&y_del).unwrap();
-        println!("  after deleting last symbol: recovered {:?}", recovered);
+        // For each byte, create a VT code (8 bits per byte)
+        // n=12 gives k=8 binary bits (exactly one byte)
+        let n = 12i64;
+        let code = VTCode::new(n, 2, 0, 0, false);
+        println!("VT code per byte: n={}, k={}", code.n, code.k);
 
-        // Demo: q-ary VT code
-        let code4 = VTCode::new(20, 4, 0, 0, false);
-        println!("\nQ-ary VT code: n={}, k={}, q={}", code4.n, code4.k, code4.q);
-        let x4: Vec<i64> = (0..code4.k).map(|i| i % 2).collect();
-        let y4 = code4.encode(&x4);
-        println!("  message:  {:?}", x4);
-        println!("  encoded:  {:?}", y4);
-        let decoded4 = code4.decode(&y4).unwrap();
-        println!("  decoded:  {:?}", decoded4);
+        // Encode each byte
+        let mut encoded_bytes = Vec::new();
+        for &byte in message {
+            let bits: Vec<i64> = (0..8).rev().map(|i| ((byte >> i) & 1) as i64).collect();
+            let encoded = code.encode(&bits);
+            encoded_bytes.push((byte, encoded));
+        }
+        println!("Encoded {} bytes into {} bits total", message.len(), message.len() * n as usize);
+
+        // Flatten the encoded data
+        let flat_encoded: Vec<i64> = encoded_bytes.iter()
+            .flat_map(|(_, enc)| enc.clone())
+            .collect();
+        println!("Flat encoded: {} bits", flat_encoded.len());
+
+        // Corrupt: delete ONE BIT from a chunk in the middle
+        // VT codes can correct a single deletion per chunk
+        let del_bit_pos = flat_encoded.len() / 2;  // Delete from the middle
+        let mut corrupted: Vec<i64> = flat_encoded[..del_bit_pos].to_vec();
+        corrupted.extend_from_slice(&flat_encoded[del_bit_pos + 1..]);
+        println!("\nAfter deleting 1 bit from position {}: {} bits remain",
+            del_bit_pos, corrupted.len());
+
+        // Find which chunk was affected
+        let affected_chunk_idx = del_bit_pos / n as usize;
+
+        // Decode: process each n-bit chunk
+        let mut recovered_bytes = Vec::new();
+        let mut recovered_count = 0;
+        let mut failed_count = 0;
+
+        for i in 0..encoded_bytes.len() {
+            let chunk_start = (i * n as usize) as usize;
+            let chunk_end = chunk_start + n as usize;
+
+            // Adjust indices for the deleted bit
+            let adjusted_start = if chunk_start > del_bit_pos {
+                chunk_start - 1
+            } else {
+                chunk_start
+            };
+            let adjusted_end = if chunk_end > del_bit_pos {
+                chunk_end - 1
+            } else {
+                chunk_end
+            };
+
+            let chunk: Vec<i64> = if i == affected_chunk_idx {
+                // This chunk has n-1 bits (VT can correct this!)
+                corrupted[adjusted_start..adjusted_end].to_vec()
+            } else {
+                // Other chunks have n bits
+                corrupted[adjusted_start..adjusted_end].to_vec()
+            };
+
+            match code.decode(&chunk) {
+                Some(bits) => {
+                    // Convert bits back to byte
+                    let mut byte: u8 = 0;
+                    for (j, &bit) in bits.iter().enumerate() {
+                        byte |= (bit as u8) << (7 - j);
+                    }
+                    recovered_bytes.push(byte);
+                    recovered_count += 1;
+                }
+                None => {
+                    failed_count += 1;
+                    println!("Failed to decode chunk {}", i);
+                }
+            }
+        }
+
+        let recovered_str = std::str::from_utf8(&recovered_bytes).unwrap_or("<invalid utf8>");
+        println!("\nRecovered {} bytes, {} failed", recovered_count, failed_count);
+        println!("Recovered bytes: {:?}", recovered_bytes);
+        println!("Recovered message: {:?}", recovered_str);
+        println!("Original message:  {:?}", message);
+
+        // All bytes should be recovered (VT corrects the single bit deletion)
+        assert_eq!(recovered_count, message.len(),
+            "Should recover all {} bytes", message.len());
+        assert_eq!(failed_count, 0, "Should have no failed decodes");
+
+        // Verify all bytes match the original
+        assert_eq!(&recovered_bytes[..], message,
+            "Recovered message should match original exactly");
+
+        println!("\nSuccess! All bytes recovered correctly using VT single-deletion correction.");
     }
 
     #[test]
