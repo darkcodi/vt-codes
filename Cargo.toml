@@ -2,5 +2,12 @@
 name = "vt-codes"
 version = "0.1.0"
 edition = "2024"
+description = "Varshamov-Tenengolts (VT) codes for single insertion/deletion correction. `no_std`, zero allocations."
+license = "MIT"
+repository = "https://github.com/darkcodi/vt-codes"
+homepage = "https://github.com/darkcodi/vt-codes"
+readme = "README.md"
+keywords = ["vt-codes", "fec", "error-correction", "no_std", "embedded"]
+categories = ["embedded", "no-std", "encoding"]
 
 [dependencies]
