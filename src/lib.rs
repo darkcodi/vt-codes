@@ -37,7 +37,12 @@ pub struct Scratch {
 
 impl Scratch {
     pub const fn new() -> Self {
-        Self { rx: [0; 256], cw: [0; 256], tmp: [0; 256], alpha: [0; 256] }
+        Self {
+            rx: [0; 256],
+            cw: [0; 256],
+            tmp: [0; 256],
+            alpha: [0; 256],
+        }
     }
 }
 
@@ -50,7 +55,11 @@ impl Scratch {
 /// - output codeword: `buf[0..n]`
 ///
 /// No heap allocation. Uses `scratch` only.
-pub fn vt_encode_in_place(buf: &mut [u8], len: usize, scratch: &mut Scratch) -> Result<usize, Error> {
+pub fn vt_encode_in_place(
+    buf: &mut [u8],
+    len: usize,
+    scratch: &mut Scratch,
+) -> Result<usize, Error> {
     if len == 0 {
         return Err(Error::InvalidInputLength);
     }
@@ -71,7 +80,12 @@ pub fn vt_encode_in_place(buf: &mut [u8], len: usize, scratch: &mut Scratch) -> 
     }
 
     // Encode into scratch, then copy out (avoid clobbering input while reading it).
-    encode_q_ary_into(n, &buf[..len], &mut scratch.cw[..n_usize], &mut scratch.alpha);
+    encode_q_ary_into(
+        n,
+        &buf[..len],
+        &mut scratch.cw[..n_usize],
+        &mut scratch.alpha,
+    );
     buf[..n_usize].copy_from_slice(&scratch.cw[..n_usize]);
 
     Ok(n_usize)
@@ -85,7 +99,11 @@ pub fn vt_encode_in_place(buf: &mut [u8], len: usize, scratch: &mut Scratch) -> 
 /// - on success, writes decoded message into `buf[0..k]`
 ///
 /// No heap allocation. Uses `scratch` only.
-pub fn vt_decode_in_place(buf: &mut [u8], len: usize, scratch: &mut Scratch) -> Result<usize, Error> {
+pub fn vt_decode_in_place(
+    buf: &mut [u8],
+    len: usize,
+    scratch: &mut Scratch,
+) -> Result<usize, Error> {
     if len == 0 || len > 256 || len > buf.len() {
         return Err(Error::InvalidInputLength);
     }
@@ -143,12 +161,17 @@ fn decode_internal_q255(
     // Build corrected codeword in cw (length n).
     if received.len() != nu {
         if correct_q_ary_indel_into(
-            n, n, 0, 0,
+            n,
+            n,
+            0,
+            0,
             received,
             &mut cw[..nu],
             &mut alpha[..],
             &mut tmp[..],
-        ).is_none() {
+        )
+        .is_none()
+        {
             return false;
         }
     } else {
@@ -318,8 +341,8 @@ fn encode_q_ary_into(n: u8, x: &[u8], out_y: &mut [u8], alpha_buf: &mut [u8]) {
         }
 
         let (r, l) = table1_pair(x[bytes_done]);
-        out_y[(pj as usize).wrapping_sub(1)] = r;       // y[2^j - 1]
-        out_y[(pj as usize).wrapping_add(1)] = l;       // y[2^j + 1]
+        out_y[(pj as usize).wrapping_sub(1)] = r; // y[2^j - 1]
+        out_y[(pj as usize).wrapping_add(1)] = l; // y[2^j + 1]
         bytes_done += 1;
     }
 
@@ -336,7 +359,11 @@ fn encode_q_ary_into(n: u8, x: &[u8], out_y: &mut [u8], alpha_buf: &mut [u8]) {
         if pj == n - 1 {
             break;
         }
-        alpha[pj as usize] = if out_y[(pj as usize) + 1] >= out_y[(pj as usize) - 1] { 1 } else { 0 };
+        alpha[pj as usize] = if out_y[(pj as usize) + 1] >= out_y[(pj as usize) - 1] {
+            1
+        } else {
+            0
+        };
     }
     alpha[2] = 1;
 
@@ -575,9 +602,9 @@ fn correct_q_ary_indel_into(
     a: u8,
     b: u8,
     y: &[u8],
-    out_y: &mut [u8],       // length n
-    alpha_buf: &mut [u8],   // work
-    alpha_corr: &mut [u8],  // work
+    out_y: &mut [u8],      // length n
+    alpha_buf: &mut [u8],  // work
+    alpha_corr: &mut [u8], // work
 ) -> Option<()> {
     let nu = n as usize;
     if out_y.len() < nu {
@@ -589,7 +616,15 @@ fn correct_q_ary_indel_into(
 
     // correct alpha using binary VT on length n-1
     let alpha_expected_len = (n - 1) as usize;
-    if correct_binary_indel_into(n - 1, m, a, &alpha_buf[..alen], &mut alpha_corr[..alpha_expected_len]).is_none() {
+    if correct_binary_indel_into(
+        n - 1,
+        m,
+        a,
+        &alpha_buf[..alen],
+        &mut alpha_corr[..alpha_expected_len],
+    )
+    .is_none()
+    {
         return None;
     }
     if compute_syndrome_binary(m, a, &alpha_corr[..alpha_expected_len]) != 0 {
@@ -664,7 +699,11 @@ fn correct_q_ary_indel_into(
             } else {
                 (y[ins_pos] == error_symbol)
                     && (alpha_corr[ins_pos - 1]
-                    == if y[ins_pos + 1] >= y[ins_pos - 1] { 1 } else { 0 })
+                        == if y[ins_pos + 1] >= y[ins_pos - 1] {
+                            1
+                        } else {
+                            0
+                        })
             };
 
             if ok {
@@ -742,8 +781,13 @@ mod tests {
             decode_buf[..with_insertion.len()].copy_from_slice(&with_insertion);
 
             let mut scratch2 = Scratch::new();
-            let decoded_len = vt_decode_in_place(&mut decode_buf, with_insertion.len(), &mut scratch2).unwrap();
-            assert_eq!(&decode_buf[..decoded_len], data, "failed at insertion pos {ins_pos}");
+            let decoded_len =
+                vt_decode_in_place(&mut decode_buf, with_insertion.len(), &mut scratch2).unwrap();
+            assert_eq!(
+                &decode_buf[..decoded_len],
+                data,
+                "failed at insertion pos {ins_pos}"
+            );
         }
     }
 
@@ -766,8 +810,13 @@ mod tests {
             decode_buf[..with_deletion.len()].copy_from_slice(&with_deletion);
 
             let mut scratch2 = Scratch::new();
-            let decoded_len = vt_decode_in_place(&mut decode_buf, with_deletion.len(), &mut scratch2).unwrap();
-            assert_eq!(&decode_buf[..decoded_len], data, "failed at deletion pos {del_pos}");
+            let decoded_len =
+                vt_decode_in_place(&mut decode_buf, with_deletion.len(), &mut scratch2).unwrap();
+            assert_eq!(
+                &decode_buf[..decoded_len],
+                data,
+                "failed at deletion pos {del_pos}"
+            );
         }
     }
 }
