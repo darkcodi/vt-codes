@@ -1,5 +1,5 @@
 [package]
-name = "vt-ecc"
+name = "vt-codes"
 version = "0.1.0"
 edition = "2024"
 

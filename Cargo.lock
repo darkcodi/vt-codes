@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "vt-ecc"
+name = "vt-codes"
 version = "0.1.0"
