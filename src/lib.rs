@@ -68,7 +68,7 @@ pub fn vt_encode_in_place(buf: &mut [u8], len: usize) -> Result<usize, Error> {
     let t = ceil_log2(n);
     let (systematic_positions, table_1_l, table_1_r, _table_1_rev, table_2, _table_2_rev) = generate_tables(n, t);
 
-    let encoded = encode_q_ary(n, k, &systematic_positions, &table_1_l, &table_1_r, &table_2, &buf[..len]);
+    let encoded = encode_q_ary(n, &systematic_positions, &table_1_l, &table_1_r, &table_2, &buf[..len]);
     buf[..n_usize].copy_from_slice(&encoded);
 
     Ok(n_usize)
@@ -438,7 +438,7 @@ fn correct_q_ary_indel(n: u8, m: u8, a: u8, b: u8, y: &[u8]) -> Option<Vec<u8>> 
 
 // --- Encoding/decoding core functions ---
 
-fn encode_q_ary(n: u8, k: u8, systematic_positions: &[u8], table_1_l: &[u8], table_1_r: &[u8], table_2: &[u8], x: &[u8]) -> Vec<u8> {
+fn encode_q_ary(n: u8, systematic_positions: &[u8], table_1_l: &[u8], table_1_r: &[u8], table_2: &[u8], x: &[u8]) -> Vec<u8> {
     let nu = n as usize;
     let t = ceil_log2(n);
     let mut y = vec![0u8; nu];
@@ -473,7 +473,6 @@ fn encode_q_ary(n: u8, k: u8, systematic_positions: &[u8], table_1_l: &[u8], tab
     y[3] = 255;
     let table_2_index = x[bytes_done] as usize;
     y[5] = table_2[table_2_index];
-    bytes_done += 1;
 
     // step 3: set alpha at positions except dyadic
     let mut alpha = convert_y_to_alpha(&y);
@@ -595,7 +594,6 @@ fn decode_codeword_q_ary(n: u8, k: u8, systematic_positions: &[u8], table_1_rev:
     } else {
         return None;
     }
-    bytes_done += 1;
 
     Some(x)
 }
@@ -697,7 +695,6 @@ fn decode_internal(
     // not merely something that satisfies the VT syndromes for some other n.
     let reencoded = encode_q_ary(
         n,
-        k,
         systematic_positions,
         table_1_l,
         table_1_r,
