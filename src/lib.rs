@@ -1,6 +1,7 @@
 mod utils;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use crate::utils::*;
 
 // --- Error type ---
@@ -490,7 +491,8 @@ fn decode_codeword_q_ary(n: u8, k: u8, systematic_positions: &[u8], table_1_rev:
 
 fn generate_tables(n: u8, t: u8) -> (Vec<u8>, Vec<u8>, Vec<u8>, HashMap<(u8, u8), u16>, Vec<u8>, HashMap<u8, u8>) {
     // table 1
-    let table_1_size = 1usize << (2.0 * 255_f64.log2()).floor() as usize;
+    // For q=255 we map a single byte (0..255) -> a pair (r,l), so size must be 256.
+    let table_1_size = 256usize;
     let mut table_1_l = vec![0u8; table_1_size];
     let mut table_1_r = vec![0u8; table_1_size];
     let mut pos = 0;
@@ -520,13 +522,11 @@ fn generate_tables(n: u8, t: u8) -> (Vec<u8>, Vec<u8>, Vec<u8>, HashMap<(u8, u8)
     }
 
     // table 2
-    let table_2_size = 1usize << 255_f64.log2().floor() as usize;
+    // Also a direct byte->symbol map: size must be 256 and must be bijective.
+    let table_2_size = 256usize;
     let mut table_2 = vec![0u8; table_2_size];
     for i in 0..table_2_size {
         table_2[i] = i as u8;
-        if i as u8 == 254 {
-            table_2[i] = 255;
-        }
     }
     let mut table_2_rev = HashMap::new();
     for i in 0..table_2_size {
@@ -541,7 +541,7 @@ fn generate_tables(n: u8, t: u8) -> (Vec<u8>, Vec<u8>, Vec<u8>, HashMap<(u8, u8)
         non_sys.push(pj as u8);
         non_sys.push((pj + 1) as u8);
     }
-    let non_sys_set: std::collections::HashSet<u8> = non_sys.into_iter().collect();
+    let non_sys_set: HashSet<u8> = non_sys.into_iter().collect();
     let systematic_positions: Vec<u8> = (0..n).filter(|x| !non_sys_set.contains(x)).collect();
 
     (systematic_positions, table_1_l, table_1_r, table_1_rev, table_2, table_2_rev)
@@ -554,7 +554,16 @@ fn is_codeword(n: u8, y: &[u8]) -> bool {
     compute_syndrome_q_ary(n, 0, 0, y) == (0, 0)
 }
 
-fn decode_internal(n: u8, y: &[u8], systematic_positions: &[u8], table_1_rev: &HashMap<(u8, u8), u16>, table_2_rev: &HashMap<u8, u8>) -> Option<Vec<u8>> {
+fn decode_internal(
+    n: u8,
+    y: &[u8],
+    systematic_positions: &[u8],
+    table_1_l: &[u8],
+    table_1_r: &[u8],
+    table_1_rev: &HashMap<(u8, u8), u16>,
+    table_2: &[u8],
+    table_2_rev: &HashMap<u8, u8>,
+) -> Option<Vec<u8>> {
     let n_y = y.len() as i64;
     if n_y < n as i64 - 1 || n_y > n as i64 + 1 {
         return None;
@@ -571,7 +580,20 @@ fn decode_internal(n: u8, y: &[u8], systematic_positions: &[u8], table_1_rev: &H
     }
 
     let k = find_k(n, 255);
-    decode_codeword_q_ary(n, k, systematic_positions, table_1_rev, table_2_rev, &corrected)
+    let decoded = decode_codeword_q_ary(n, k, systematic_positions, table_1_rev, table_2_rev, &corrected)?;
+
+    // CRITICAL: Ensure the candidate is a codeword from *our* encoder construction,
+    // not merely something that satisfies the VT syndromes for some other n.
+    let reencoded = encode_q_ary(
+        n,
+        k,
+        systematic_positions,
+        table_1_l,
+        table_1_r,
+        table_2,
+        &decoded,
+    );
+    if reencoded == corrected { Some(decoded) } else { None }
 }
 
 // --- Public API ---
@@ -667,11 +689,20 @@ pub fn vt_decode_in_place(buf: &mut [u8], len: usize) -> Result<usize, Error> {
         }
 
         let t = ceil_log2(n);
-        let (systematic_positions, _table_1_l, _table_1_r, table_1_rev, _table_2, table_2_rev) = generate_tables(n, t);
+        let (systematic_positions, table_1_l, table_1_r, table_1_rev, table_2, table_2_rev) = generate_tables(n, t);
 
         let k_usize = k as usize;
 
-        if let Some(decoded) = decode_internal(n, &buf[..len.min(buf.len())], &systematic_positions, &table_1_rev, &table_2_rev) {
+        if let Some(decoded) = decode_internal(
+            n,
+            &buf[..len.min(buf.len())],
+            &systematic_positions,
+            &table_1_l,
+            &table_1_r,
+            &table_1_rev,
+            &table_2,
+            &table_2_rev,
+        ) {
             buf[..k_usize].copy_from_slice(&decoded);
             return Ok(k_usize);
         }
