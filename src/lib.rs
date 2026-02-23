@@ -1,9 +1,6 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-#[cfg(feature = "std")]
-extern crate std;
-
 use core::fmt;
 
 // ===== Error type =====
@@ -24,9 +21,6 @@ impl fmt::Display for Error {
         }
     }
 }
-
-#[cfg(feature = "std")]
-impl std::error::Error for Error {}
 
 // ===== Scratch (no heap, caller-owned RAM) =====
 
@@ -107,7 +101,7 @@ pub fn vt_decode_in_place(buf: &mut [u8], len: usize, scratch: &mut Scratch) -> 
 
     for i in 0..cand_count {
         let n = cands[i];
-        if n < 6 || n > 255 {
+        if n < 6 {
             continue;
         }
 
@@ -342,7 +336,7 @@ fn encode_q_ary_into(n: u8, x: &[u8], out_y: &mut [u8], alpha_buf: &mut [u8]) {
         if pj == n - 1 {
             break;
         }
-        alpha[(pj as usize)] = if out_y[(pj as usize) + 1] >= out_y[(pj as usize) - 1] { 1 } else { 0 };
+        alpha[pj as usize] = if out_y[(pj as usize) + 1] >= out_y[(pj as usize) - 1] { 1 } else { 0 };
     }
     alpha[2] = 1;
 
