@@ -20,8 +20,8 @@ mod utils;
 pub fn vt_encode_in_place(
     buf: &mut [u8],
     len: usize,
-    scratch: &mut Scratch,
 ) -> Result<usize, Error> {
+    let mut scratch = Scratch::new();
     if len == 0 {
         return Err(Error::InvalidInputLength);
     }
@@ -64,8 +64,8 @@ pub fn vt_encode_in_place(
 pub fn vt_decode_in_place(
     buf: &mut [u8],
     len: usize,
-    scratch: &mut Scratch,
 ) -> Result<usize, Error> {
+    let mut scratch = Scratch::new();
     if len == 0 || len > 256 || len > buf.len() {
         return Err(Error::InvalidInputLength);
     }
@@ -118,10 +118,8 @@ mod tests {
         let mut buf = [0u8; 256];
         buf[..len].copy_from_slice(data);
 
-        let mut scratch = Scratch::new();
-
-        let n = vt_encode_in_place(&mut buf, len, &mut scratch).unwrap();
-        let k = vt_decode_in_place(&mut buf, n, &mut scratch).unwrap();
+        let n = vt_encode_in_place(&mut buf, len).unwrap();
+        let k = vt_decode_in_place(&mut buf, n).unwrap();
         assert_eq!(&buf[..k], data);
     }
 
@@ -133,8 +131,7 @@ mod tests {
         let mut buf = [0u8; 256];
         buf[..len].copy_from_slice(data);
 
-        let mut scratch = Scratch::new();
-        let n = vt_encode_in_place(&mut buf, len, &mut scratch).unwrap();
+        let n = vt_encode_in_place(&mut buf, len).unwrap();
 
         for ins_pos in 0..=n {
             let mut with_insertion = std::vec::Vec::from(&buf[..n]);
@@ -143,9 +140,7 @@ mod tests {
             let mut decode_buf = [0u8; 256];
             decode_buf[..with_insertion.len()].copy_from_slice(&with_insertion);
 
-            let mut scratch2 = Scratch::new();
-            let decoded_len =
-                vt_decode_in_place(&mut decode_buf, with_insertion.len(), &mut scratch2).unwrap();
+            let decoded_len = vt_decode_in_place(&mut decode_buf, with_insertion.len()).unwrap();
             assert_eq!(
                 &decode_buf[..decoded_len],
                 data,
@@ -162,8 +157,7 @@ mod tests {
         let mut buf = [0u8; 256];
         buf[..len].copy_from_slice(data);
 
-        let mut scratch = Scratch::new();
-        let n = vt_encode_in_place(&mut buf, len, &mut scratch).unwrap();
+        let n = vt_encode_in_place(&mut buf, len).unwrap();
 
         for del_pos in 0..n {
             let mut with_deletion = std::vec::Vec::from(&buf[..n]);
@@ -172,9 +166,7 @@ mod tests {
             let mut decode_buf = [0u8; 256];
             decode_buf[..with_deletion.len()].copy_from_slice(&with_deletion);
 
-            let mut scratch2 = Scratch::new();
-            let decoded_len =
-                vt_decode_in_place(&mut decode_buf, with_deletion.len(), &mut scratch2).unwrap();
+            let decoded_len = vt_decode_in_place(&mut decode_buf, with_deletion.len()).unwrap();
             assert_eq!(
                 &decode_buf[..decoded_len],
                 data,
