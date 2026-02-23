@@ -48,11 +48,17 @@ impl std::error::Error for Error {}
 /// # Ok::<(), Error>(())
 /// ```
 pub fn vt_encode_in_place(buf: &mut [u8], len: usize) -> Result<usize, Error> {
-    if len == 0 || len > 255 {
+    if len == 0 {
         return Err(Error::InvalidInputLength);
     }
+
+    let max_k = find_k(255, 255) as usize;
+    if len > max_k {
+        return Err(Error::InvalidInputLength);
+    }
+
     let k = len as u8;
-    let n = find_smallest_n(k, 255);
+    let n = find_smallest_n_checked(k, 255).ok_or(Error::InvalidInputLength)?;
     let n_usize = n as usize;
 
     if buf.len() < n_usize {
@@ -93,7 +99,7 @@ pub fn vt_encode_in_place(buf: &mut [u8], len: usize) -> Result<usize, Error> {
 /// # Ok::<(), Error>(())
 /// ```
 pub fn vt_decode_in_place(buf: &mut [u8], len: usize) -> Result<usize, Error> {
-    if len == 0 {
+    if len == 0 || len > 256 || len > buf.len() {
         return Err(Error::InvalidInputLength);
     }
 
@@ -199,25 +205,18 @@ fn find_k(n: u8, q: u8) -> u8 {
     }
 }
 
-fn find_smallest_n(k: u8, q: u8) -> u8 {
-    assert!(q >= 1);
-    assert!(k >= 1);
-    let mut n = if q == 1 {
-        let sum = k as i64 + ceil_log2(k + 1) as i64;
-        sum as u8
-    } else {
-        // For q == 255, ceil_log2(q+1) would be 8 (since q+1 = 256)
-        // But ceil_log2 takes u8, and 256 overflows, so handle it specially
-        let log_q_plus_1 = if q == 255 { 8 } else { ceil_log2(q + 1) };
-        k / log_q_plus_1.max(1)
-    };
-    loop {
-        if find_k(n, q) >= k {
-            break;
+fn find_smallest_n_checked(k: u8, q: u8) -> Option<u8> {
+    let log_q_plus_1 = if q == 255 { 8 } else { ceil_log2(q.wrapping_add(1)) };
+
+    let mut n: u16 = (k as u16) / (log_q_plus_1 as u16).max(1);
+    while n <= 255 {
+        let nu8 = n as u8;
+        if find_k(nu8, q) >= k {
+            return Some(nu8);
         }
         n += 1;
     }
-    n
+    None
 }
 
 // --- Error correction ---
