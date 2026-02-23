@@ -1,19 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-/// Python-style non-negative modulo: ((a % m) + m) % m
-pub fn mod_floor(a: i64, m: i64) -> i64 {
-    ((a % m) + m) % m
-}
-
-pub fn ceil_log2(x: u8) -> u8 {
-    (x as f64).log2().ceil() as u8
-}
-
-pub fn power_of_two(num: u8) -> bool {
-    num > 0 && (num & (num - 1)) == 0
-}
-
 // --- Error type ---
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +21,121 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+// --- Public API ---
+
+/// Encodes data in-place using Varshamov-Tenengolts codes.
+///
+/// # Arguments
+/// * `buf` - Buffer containing input data at `[0..len]` and output codeword at `[0..n]`
+/// * `len` - Length of input message in bytes
+///
+/// # Returns
+/// * `Ok(n)` - Length of the encoded codeword
+/// * `Err(Error::BufferTooSmall)` - If buffer is too small to hold the codeword
+/// * `Err(Error::InvalidInputLength)` - If input length is invalid
+///
+/// # Examples
+/// ```
+/// use vt_ecc::{vt_encode_in_place, vt_decode_in_place, Error};
+/// let mut buf = vec![0u8; 32];
+/// buf[..11].copy_from_slice(b"Hello world");
+/// let n = vt_encode_in_place(&mut buf, 11).unwrap();
+/// assert_eq!(n, 20); // codeword length for k=11 with q=255
+/// // Decode back
+/// let k = vt_decode_in_place(&mut buf, n).unwrap();
+/// assert_eq!(&buf[..k], b"Hello world");
+/// # Ok::<(), Error>(())
+/// ```
+pub fn vt_encode_in_place(buf: &mut [u8], len: usize) -> Result<usize, Error> {
+    if len == 0 || len > 255 {
+        return Err(Error::InvalidInputLength);
+    }
+    let k = len as u8;
+    let n = find_smallest_n(k, 255);
+    let n_usize = n as usize;
+
+    if buf.len() < n_usize {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let t = ceil_log2(n);
+    let (systematic_positions, table_1_l, table_1_r, _table_1_rev, table_2, _table_2_rev) = generate_tables(n, t);
+
+    let encoded = encode_q_ary(n, k, &systematic_positions, &table_1_l, &table_1_r, &table_2, &buf[..len]);
+    buf[..n_usize].copy_from_slice(&encoded);
+
+    Ok(n_usize)
+}
+
+/// Decodes data in-place using Varshamov-Tenengolts codes.
+///
+/// Corrects a single deletion or insertion in the received data.
+///
+/// # Arguments
+/// * `buf` - Buffer containing received data at `[0..len]`, will contain decoded message at `[0..k]`
+/// * `len` - Length of received data (may have 1 deletion/insertion)
+///
+/// # Returns
+/// * `Ok(k)` - Length of the decoded message
+/// * `Err(Error::InvalidInputLength)` - If input length is invalid
+/// * `Err(Error::CorruptedData)` - If data is too corrupted to recover
+///
+/// # Examples
+/// ```
+/// use vt_ecc::{vt_encode_in_place, vt_decode_in_place, Error};
+/// let mut buf = vec![0u8; 32];
+/// buf[..11].copy_from_slice(b"Hello world");
+/// let n = vt_encode_in_place(&mut buf, 11).unwrap();
+/// // After transmission with potential errors:
+/// let k = vt_decode_in_place(&mut buf, n).unwrap();
+/// assert_eq!(&buf[..k], b"Hello world");
+/// # Ok::<(), Error>(())
+/// ```
+pub fn vt_decode_in_place(buf: &mut [u8], len: usize) -> Result<usize, Error> {
+    if len == 0 {
+        return Err(Error::InvalidInputLength);
+    }
+
+    // Try different possible n values: len, len+1, len-1
+    let possible_n: Vec<u8> = vec![
+        len as u8,
+        (len as u8).saturating_add(1),
+        (len as u8).saturating_sub(1),
+    ];
+
+    for n in possible_n {
+        if n < 2 {
+            continue;
+        }
+
+        let k = find_k(n, 255);
+        if k == 0 {
+            continue;
+        }
+
+        let t = ceil_log2(n);
+        let (systematic_positions, table_1_l, table_1_r, table_1_rev, table_2, table_2_rev) = generate_tables(n, t);
+
+        let k_usize = k as usize;
+
+        if let Some(decoded) = decode_internal(
+            n,
+            &buf[..len.min(buf.len())],
+            &systematic_positions,
+            &table_1_l,
+            &table_1_r,
+            &table_1_rev,
+            &table_2,
+            &table_2_rev,
+        ) {
+            buf[..k_usize].copy_from_slice(&decoded);
+            return Ok(k_usize);
+        }
+    }
+
+    Err(Error::CorruptedData)
+}
 
 // --- Alpha & syndrome ---
 
@@ -606,119 +708,19 @@ fn decode_internal(
     if reencoded == corrected { Some(decoded) } else { None }
 }
 
-// --- Public API ---
+// --- Utils ---
 
-/// Encodes data in-place using Varshamov-Tenengolts codes.
-///
-/// # Arguments
-/// * `buf` - Buffer containing input data at `[0..len]` and output codeword at `[0..n]`
-/// * `len` - Length of input message in bytes
-///
-/// # Returns
-/// * `Ok(n)` - Length of the encoded codeword
-/// * `Err(Error::BufferTooSmall)` - If buffer is too small to hold the codeword
-/// * `Err(Error::InvalidInputLength)` - If input length is invalid
-///
-/// # Examples
-/// ```
-/// use vt_ecc::{vt_encode_in_place, vt_decode_in_place, Error};
-/// let mut buf = vec![0u8; 32];
-/// buf[..11].copy_from_slice(b"Hello world");
-/// let n = vt_encode_in_place(&mut buf, 11).unwrap();
-/// assert_eq!(n, 20); // codeword length for k=11 with q=255
-/// // Decode back
-/// let k = vt_decode_in_place(&mut buf, n).unwrap();
-/// assert_eq!(&buf[..k], b"Hello world");
-/// # Ok::<(), Error>(())
-/// ```
-pub fn vt_encode_in_place(buf: &mut [u8], len: usize) -> Result<usize, Error> {
-    if len == 0 || len > 255 {
-        return Err(Error::InvalidInputLength);
-    }
-    let k = len as u8;
-    let n = find_smallest_n(k, 255);
-    let n_usize = n as usize;
-
-    if buf.len() < n_usize {
-        return Err(Error::BufferTooSmall);
-    }
-
-    let t = ceil_log2(n);
-    let (systematic_positions, table_1_l, table_1_r, _table_1_rev, table_2, _table_2_rev) = generate_tables(n, t);
-
-    let encoded = encode_q_ary(n, k, &systematic_positions, &table_1_l, &table_1_r, &table_2, &buf[..len]);
-    buf[..n_usize].copy_from_slice(&encoded);
-
-    Ok(n_usize)
+/// Python-style non-negative modulo: ((a % m) + m) % m
+fn mod_floor(a: i64, m: i64) -> i64 {
+    ((a % m) + m) % m
 }
 
-/// Decodes data in-place using Varshamov-Tenengolts codes.
-///
-/// Corrects a single deletion or insertion in the received data.
-///
-/// # Arguments
-/// * `buf` - Buffer containing received data at `[0..len]`, will contain decoded message at `[0..k]`
-/// * `len` - Length of received data (may have 1 deletion/insertion)
-///
-/// # Returns
-/// * `Ok(k)` - Length of the decoded message
-/// * `Err(Error::InvalidInputLength)` - If input length is invalid
-/// * `Err(Error::CorruptedData)` - If data is too corrupted to recover
-///
-/// # Examples
-/// ```
-/// use vt_ecc::{vt_encode_in_place, vt_decode_in_place, Error};
-/// let mut buf = vec![0u8; 32];
-/// buf[..11].copy_from_slice(b"Hello world");
-/// let n = vt_encode_in_place(&mut buf, 11).unwrap();
-/// // After transmission with potential errors:
-/// let k = vt_decode_in_place(&mut buf, n).unwrap();
-/// assert_eq!(&buf[..k], b"Hello world");
-/// # Ok::<(), Error>(())
-/// ```
-pub fn vt_decode_in_place(buf: &mut [u8], len: usize) -> Result<usize, Error> {
-    if len == 0 {
-        return Err(Error::InvalidInputLength);
-    }
+fn ceil_log2(x: u8) -> u8 {
+    (x as f64).log2().ceil() as u8
+}
 
-    // Try different possible n values: len, len+1, len-1
-    let possible_n: Vec<u8> = vec![
-        len as u8,
-        (len as u8).saturating_add(1),
-        (len as u8).saturating_sub(1),
-    ];
-
-    for n in possible_n {
-        if n < 2 {
-            continue;
-        }
-
-        let k = find_k(n, 255);
-        if k == 0 {
-            continue;
-        }
-
-        let t = ceil_log2(n);
-        let (systematic_positions, table_1_l, table_1_r, table_1_rev, table_2, table_2_rev) = generate_tables(n, t);
-
-        let k_usize = k as usize;
-
-        if let Some(decoded) = decode_internal(
-            n,
-            &buf[..len.min(buf.len())],
-            &systematic_positions,
-            &table_1_l,
-            &table_1_r,
-            &table_1_rev,
-            &table_2,
-            &table_2_rev,
-        ) {
-            buf[..k_usize].copy_from_slice(&decoded);
-            return Ok(k_usize);
-        }
-    }
-
-    Err(Error::CorruptedData)
+fn power_of_two(num: u8) -> bool {
+    num > 0 && (num & (num - 1)) == 0
 }
 
 #[cfg(test)]
