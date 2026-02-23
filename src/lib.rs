@@ -714,8 +714,10 @@ fn mod_floor(a: i64, m: i64) -> i64 {
     ((a % m) + m) % m
 }
 
-fn ceil_log2(x: u8) -> u8 {
-    (x as f64).log2().ceil() as u8
+pub fn ceil_log2(x: u8) -> u8 {
+    if x <= 1 { return 0; }
+    let lz = (x - 1).leading_zeros() as u8; // 0..=8
+    8 - lz
 }
 
 fn power_of_two(num: u8) -> bool {
